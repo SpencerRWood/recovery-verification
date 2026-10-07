@@ -1,7 +1,7 @@
 # Recovery Verification
 
 Standalone Python/Dagster provider for a versioned recovery consumer contract.
-This foundation validates declarations without executing recovery operations.
+It validates declarations and runs non-destructive daily prerequisite checks.
 Consumers own bootstrap, provisioning, restore, rollback, and service validation.
 
 ## Local development
@@ -17,23 +17,27 @@ wood repo validate --json
 uv build
 ```
 
-The CLI exits 0 for a valid manifest/selection and 2 for invalid or unreadable
-input. Its JSON distinguishes `contract_state: passed` from
-`readiness_state: unavailable`. No external prerequisites, backups, secrets,
-entrypoints, or recovery capabilities are proven by this foundation. The example
-is fictional; infrastructure and homelab onboarding belongs to Story #495.
+Without execution options, the CLI exits 0 for a valid manifest/selection and 2
+for invalid or unreadable input. Contract-only success does not prove readiness.
+The example is fictional; infrastructure and homelab export their own manifests.
+See [daily readiness](docs/daily-readiness.md) for probes, explicit trust,
+runtime inputs, evidence freshness and independent check diagnosis.
 
 `contract_preflight_job` accepts explicit `manifest_json` and optional `target_ids`
 in its op config. It uses the same pure validator as the CLI. `runtime_smoke_job`
-provides the platform's fast infrastructure-only smoke check. There are no
-schedules, sensors, daily/weekly/monthly recovery jobs, or production execution
-adapters in this Story.
+provides the platform's fast infrastructure-only smoke check.
+`recovery_readiness_daily` uses the shared readiness asset and prerequisite asset
+check. Its UTC schedule is stopped by default until explicitly configured and
+enabled. Weekly verification, monthly drills and production deployment remain
+separate work.
 
 ## Structure and contracts
 
 - `contract.py`: strict immutable wire models and parser.
 - `models.py`: checks, evidence, and conservative normalized readiness.
 - `preflight.py`: deterministic validation evidence and target selection.
+- `readiness.py`: shared daily checks and revision-bound readiness evidence.
+- `probes.py`: bounded read-only prerequisite probes with sanitized output.
 - `adapters.py`: declarative consumer validation plans; no executor.
 - `dagster/definitions.py`: generic code location.
 - [Consumer contract](docs/recovery-contract.md): versioning, ownership, safety.
@@ -62,11 +66,9 @@ psycopg2-binary 2.9.13 form the pinned platform runtime family. Review their
 updates together. Validation consumes `SpencerRWood/workflows` at `v3`; release
 consumes its integrated `release-container.yml@v3`. The Dagster contract enables
 exact-candidate PostgreSQL/gRPC smoke validation before release publication.
-Semantic-release owns versions and tags. Publishing, CI and deployment have not
-been performed during local implementation.
+Semantic-release owns versions and tags.
 
 Quality gates are Ruff, Ruff formatting, strict mypy, pytest with branch coverage
 (minimum 90%), pre-commit, and Python package build. Wood retains validation logs
-and the source-bound record used during delivery. Application runtime verification
-is deferred until execution capabilities exist; no `[tool.wood.verify]` contract
-is declared for this declaration-only foundation.
+and the source-bound record used during delivery. No `[tool.wood.verify]` contract
+is declared yet; production cadence and deployment acceptance belong to OP-500.

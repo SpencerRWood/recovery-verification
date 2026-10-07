@@ -22,5 +22,5 @@ def test_consumer_contract_fixture(name: str) -> None:
     assert {"repository", "secret", "artifact", "storage", "runbook"} <= kinds
     plan = validation_plan(target, "readiness")
     assert plan[0].command.entrypoint == "scripts/recovery.py"
-    assert plan[0].command.args == ("preflight",)
+    assert plan[0].command.args == ("preflight", "--local-only")
     assert preflight(manifest).readiness_state == "unavailable"

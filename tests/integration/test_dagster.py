@@ -1,13 +1,20 @@
 """Real Dagster Definitions load and local execution through the generic boundary."""
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
-from dagster import Definitions
+from dagster import Definitions, RunRequest, SkipReason
 
+from recovery_verification import readiness
 from recovery_verification.dagster.definitions import defs
-from recovery_verification.dagster.jobs import PreflightConfig, contract_preflight
+from recovery_verification.dagster.jobs import (
+    PreflightConfig,
+    contract_preflight,
+    recovery_readiness_daily_schedule,
+)
+from recovery_verification.probes import BoundedProbe, result
 
 
 def test_definitions_and_smoke() -> None:
@@ -15,8 +22,10 @@ def test_definitions_and_smoke() -> None:
     assert {job.name for job in defs.resolve_all_job_defs()} == {
         "runtime_smoke_job",
         "contract_preflight_job",
+        "recovery_readiness_daily",
+        "__ASSET_JOB",
     }
-    assert not defs.schedules
+    assert defs.schedules
     assert not defs.sensors
     result = defs.get_job_def("runtime_smoke_job").execute_in_process()
     assert result.success
@@ -63,3 +72,57 @@ def test_job_selection_fails_closed(document: dict[str, Any]) -> None:
         contract_preflight(
             PreflightConfig(manifest_json=json.dumps(document), target_ids=["absent"])
         )
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [("passed", "READY"), ("failed", "NOT_READY"), ("unavailable", "UNKNOWN")],
+)
+def test_daily_job_uses_shared_checks(
+    document: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+    expected: str,
+) -> None:
+    for name in ("_checkout", "_interfaces", "_consumer"):
+        monkeypatch.setattr(readiness, name, lambda *_: result("passed", "local_valid"))
+    monkeypatch.setattr(
+        BoundedProbe, "__call__", lambda *_: result(state, "probe_result")
+    )
+    run = defs.resolve_job_def("recovery_readiness_daily").execute_in_process(
+        run_config={
+            "ops": {
+                "recovery_readiness": {
+                    "config": {
+                        "manifest_json": json.dumps(document),
+                        "checkouts": {"example-linux": str(tmp_path)},
+                    }
+                }
+            }
+        }
+    )
+    assert run.success
+    report = json.loads(run.output_for_node("recovery_readiness"))
+    assert report["readiness"] == expected
+    evaluations = run.get_asset_check_evaluations()
+    assert len(evaluations) == 1
+    assert evaluations[0].passed == (expected == "READY")
+    assert evaluations[0].metadata["evidence"].value == report
+
+
+def test_daily_schedule_explicit_configuration(
+    document: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("RECOVERY_READINESS_CONFIG", raising=False)
+    assert isinstance(recovery_readiness_daily_schedule(), SkipReason)
+    source = tmp_path / "daily.json"
+    monkeypatch.setenv("RECOVERY_READINESS_CONFIG", str(source))
+    assert isinstance(recovery_readiness_daily_schedule(), SkipReason)
+    source.write_text(json.dumps({"manifest_json": json.dumps(document)}))
+    request = recovery_readiness_daily_schedule()
+    assert isinstance(request, RunRequest)
+    assert request.run_config["ops"]["recovery_readiness"]["config"]["manifest_json"]
+    source.write_text('{"manifest_json":"invalid"}')
+    assert isinstance(recovery_readiness_daily_schedule(), SkipReason)
+    assert recovery_readiness_daily_schedule.execution_timezone == "UTC"

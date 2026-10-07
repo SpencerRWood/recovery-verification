@@ -8,6 +8,8 @@ from pathlib import Path
 from recovery_verification.contract import parse_manifest
 from recovery_verification.invocation import invoke_readiness
 from recovery_verification.preflight import preflight
+from recovery_verification.probes import BoundedProbe
+from recovery_verification.readiness import run_readiness
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -15,6 +17,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("manifest", type=Path)
     parser.add_argument("--target", action="append", default=[], dest="targets")
     parser.add_argument("--checkout", type=Path)
+    parser.add_argument("--daily", action="store_true")
+    parser.add_argument("--check", action="append", default=[], dest="checks")
     parser.add_argument(
         "--invoke-check", help="Explicitly trust and invoke one readiness check"
     )
@@ -22,6 +26,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         manifest = parse_manifest(args.manifest.read_text(encoding="utf-8"))
         result = preflight(manifest, tuple(args.targets))
+        if args.daily:
+            if args.checkout is None or len(args.targets) != 1 or args.invoke_check:
+                raise ValueError("daily requires explicit target and checkout")
+            report = run_readiness(
+                manifest,
+                {args.targets[0]: args.checkout},
+                BoundedProbe(),
+                target_ids=tuple(args.targets),
+                check_ids=tuple(args.checks),
+            )
+            sys.stdout.write(report.model_dump_json() + "\n")
+            return {"READY": 0, "NOT_READY": 1, "UNKNOWN": 4}[report.readiness]
+        if args.checks:
+            raise ValueError("check selection requires daily")
         if args.checkout is not None or args.invoke_check is not None:
             if (
                 args.checkout is None
