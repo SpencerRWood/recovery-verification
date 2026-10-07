@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 from dagster import Definitions, RunRequest, SkipReason
+from dagster._core.workspace.autodiscovery import loadable_targets_from_python_module
 
 from recovery_verification import readiness
 from recovery_verification.dagster.definitions import defs
@@ -15,6 +16,15 @@ from recovery_verification.dagster.jobs import (
     recovery_readiness_daily_schedule,
 )
 from recovery_verification.probes import BoundedProbe, result
+
+
+def test_grpc_module_discovery_exposes_one_code_location() -> None:
+    targets = loadable_targets_from_python_module(
+        "recovery_verification.dagster.definitions", working_directory=None
+    )
+    assert len(targets) == 1
+    assert targets[0].attribute == "defs"
+    assert targets[0].target_definition is defs
 
 
 def test_definitions_and_smoke() -> None:
