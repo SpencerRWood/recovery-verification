@@ -1,0 +1,118 @@
+{
+  "schema_version": "1",
+  "targets": [
+    {
+      "id": "homelab",
+      "owning_repository": "SpencerRWood/homelab",
+      "platform": "linux",
+      "adapter": "consumer-command-v1",
+      "entrypoints": {
+        "bootstrap": {
+          "entrypoint": "scripts/recovery.py",
+          "args": [
+            "bootstrap"
+          ],
+          "timeout_seconds": 10
+        },
+        "recovery": {
+          "entrypoint": "scripts/rollback.py",
+          "args": [
+            "--environment",
+            "homelab",
+            "--json"
+          ],
+          "timeout_seconds": 1800
+        }
+      },
+      "validation_commands": [
+        {
+          "id": "consumer_preflight",
+          "levels": [
+            "readiness"
+          ],
+          "command": {
+            "entrypoint": "scripts/recovery.py",
+            "args": [
+              "preflight"
+            ],
+            "timeout_seconds": 150
+          }
+        }
+      ],
+      "required_dependencies": [
+        {
+          "id": "homelab",
+          "kind": "repository",
+          "reference": "git://SpencerRWood/homelab"
+        },
+        {
+          "id": "application_images",
+          "kind": "artifact",
+        "reference": "repo://compose"
+        },
+        {
+          "id": "media_mount",
+          "kind": "storage",
+          "reference": "mount:///mnt/wood-server-nas/media"
+        },
+        {
+          "id": "database_mount",
+          "kind": "storage",
+          "reference": "mount:///mnt/wood-server-nas/database"
+        },
+        {
+          "id": "backups_mount",
+          "kind": "storage",
+          "reference": "mount:///mnt/wood-server-nas/backup_server"
+        },
+        {
+          "id": "runtime_secret_names",
+          "kind": "secret",
+          "reference": "infisical://Homelab/homelab#ansible/inventory/group_vars/homelab.yml:infisical_runtime_services"
+        },
+        {
+          "id": "expected_services",
+          "kind": "runbook",
+        "reference": "repo://scripts/health-check-remote.sh#containers"
+        },
+        {
+          "id": "expected_endpoints",
+          "kind": "runbook",
+          "reference": "repo://compose/platform/caddy"
+        },
+        {
+          "id": "database_recovery",
+          "kind": "runbook",
+          "reference": "repo://docs/postgres-migration.md"
+        },
+        {
+          "id": "ansible",
+          "kind": "tool",
+          "reference": "ansible-playbook"
+        },
+        {
+          "id": "rollback",
+          "kind": "runbook",
+          "reference": "repo://docs/rollback-contract.md"
+        }
+      ],
+      "backup_sources": [
+        {
+          "id": "migration_snapshot",
+          "reference": "path:///mnt/wood-server-nas/backup_server/homelab-migration/20260920T155000EDT",
+          "max_age_seconds": 86400
+        },
+        {
+          "id": "database_cutover",
+          "reference": "path:///mnt/wood-server-nas/backup_server/homelab-migration/phase4-homelab-postgres-20260925T162239Z/cluster.sql.gz",
+          "max_age_seconds": 86400
+        }
+      ],
+      "allowed_verification_levels": [
+        "readiness"
+      ],
+      "cadence_overrides": [],
+      "revision": "1111111111111111111111111111111111111111"
+    }
+  ]
+}
