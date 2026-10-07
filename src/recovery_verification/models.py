@@ -1,8 +1,8 @@
 """Reusable check/evidence models and conservative normalized readiness."""
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from recovery_verification.contract import ContractModel, Identifier, Reference
 
@@ -43,3 +43,31 @@ class PreflightResult(ContractModel):
     contract_state: Literal["passed"] = "passed"
     readiness_state: Literal["unavailable"] = "unavailable"
     checks: tuple[Check, ...]
+
+
+class ConsumerCheck(ContractModel):
+    """The only consumer output fields accepted by generic readiness invocation."""
+
+    id: Identifier
+    state: State
+    reason: Identifier
+
+
+class ConsumerResult(ContractModel):
+    """No arbitrary logs, secrets, service configuration, or ambiguous success."""
+
+    schema_version: Literal["1"]
+    mode: Literal["preflight"]
+    readiness_state: State
+    checks: Annotated[tuple[ConsumerCheck, ...], Field(min_length=1, max_length=128)]
+
+    @model_validator(mode="after")
+    def consistent_state(self) -> Self:
+        if len({check.id for check in self.checks}) != len(self.checks):
+            raise ValueError("duplicate check")
+        if (
+            normalize_readiness(tuple(check.state for check in self.checks))
+            != self.readiness_state
+        ):
+            raise ValueError("inconsistent readiness")
+        return self

@@ -37,6 +37,8 @@ adapters in this Story.
 - `adapters.py`: declarative consumer validation plans; no executor.
 - `dagster/definitions.py`: generic code location.
 - [Consumer contract](docs/recovery-contract.md): versioning, ownership, safety.
+- [Consumer onboarding](docs/consumer-onboarding.md): source references, trusted
+  readiness invocation and cross-consumer validation.
 - [Implementation scope](docs/platform-foundation.md): requirements and provenance.
 
 Consumers exchange JSON and implement their own executable entrypoints. They do

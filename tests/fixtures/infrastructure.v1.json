@@ -1,0 +1,118 @@
+{
+  "schema_version": "1",
+  "targets": [
+    {
+      "id": "infrastructure-dev",
+      "owning_repository": "SpencerRWood/infrastructure",
+      "platform": "linux",
+      "adapter": "consumer-command-v1",
+      "entrypoints": {
+        "bootstrap": {
+          "entrypoint": "scripts/recovery.py",
+          "args": [
+            "bootstrap"
+          ],
+          "timeout_seconds": 10
+        },
+        "recovery": {
+          "entrypoint": "scripts/rollback.py",
+          "args": [
+            "--environment",
+            "infrastructure-dev",
+            "--json"
+          ],
+          "timeout_seconds": 1800
+        }
+      },
+      "validation_commands": [
+        {
+          "id": "consumer_preflight",
+          "levels": [
+            "readiness"
+          ],
+          "command": {
+            "entrypoint": "scripts/recovery.py",
+            "args": [
+              "preflight"
+            ],
+            "timeout_seconds": 150
+          }
+        }
+      ],
+      "required_dependencies": [
+        {
+          "id": "infrastructure",
+          "kind": "repository",
+          "reference": "git://SpencerRWood/infrastructure"
+        },
+        {
+          "id": "application_images",
+          "kind": "artifact",
+        "reference": "repo://environments/dev.yml"
+        },
+        {
+          "id": "postgres_state",
+          "kind": "storage",
+          "reference": "path:///srv/infrastructure/state/postgres/data"
+        },
+        {
+          "id": "infisical_bootstrap",
+          "kind": "storage",
+          "reference": "path:///srv/infrastructure/bootstrap/infisical/infisical.env"
+        },
+        {
+          "id": "runtime_secret_names",
+          "kind": "secret",
+        "reference": "infisical://Infrastructure%20Dev/dev#environments/dev.yml:infrastructure_infisical_runtime_services"
+        },
+        {
+          "id": "ci_ghcr",
+          "kind": "secret",
+          "reference": "infisical://33c5aed5-165f-4ef3-845a-2f9d0f9c06d5/ci/github/WEBSITE_PORTFOLIO_GHCR_TOKEN"
+        },
+        {
+          "id": "expected_services",
+          "kind": "runbook",
+          "reference": "repo://environments/dev.yml#services"
+        },
+        {
+          "id": "expected_endpoints",
+          "kind": "runbook",
+          "reference": "repo://compose/caddy/routes"
+        },
+        {
+          "id": "database_recovery",
+          "kind": "runbook",
+          "reference": "repo://docs/postgres-migration-inventory.md"
+        },
+        {
+          "id": "ansible",
+          "kind": "tool",
+          "reference": "ansible-playbook"
+        },
+        {
+          "id": "rollback",
+          "kind": "runbook",
+          "reference": "repo://docs/rollback-contract.md"
+        }
+      ],
+      "backup_sources": [
+        {
+          "id": "dagster_cutover",
+          "reference": "path:///srv/infrastructure/backups/dagster/dagster-final.dump",
+          "max_age_seconds": 86400
+        },
+        {
+          "id": "cluster_cutovers",
+          "reference": "path:///srv/infrastructure/backups/wood-data-platform",
+          "max_age_seconds": 86400
+        }
+      ],
+      "allowed_verification_levels": [
+        "readiness"
+      ],
+      "cadence_overrides": [],
+      "revision": "1111111111111111111111111111111111111111"
+    }
+  ]
+}

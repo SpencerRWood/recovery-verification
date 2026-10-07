@@ -52,11 +52,14 @@ configuration, or repository-name switches. Consumer executables remain in their
 own repositories. `validation_plan` preserves owner, revision, and command;
 it never executes. It rejects requested levels the target has not allowed.
 
-No executable runner is provided in v1 foundation. Before adding one, later
-Stories must verify checkout revision, executable containment including symlinks,
-isolation, explicit safe mode, timeout/retry/cleanup, and secret handling. A
-manifest is a declaration, not trusted authorization to execute arbitrary code.
-Target-specific logic must be added to consumers, not to Dagster definitions.
+The foundation provides no recovery executor. OP-495 adds an explicitly trusted
+readiness-only adapter with revision/ownership/clean-checkout validation,
+entrypoint containment, bounded output/timeout, process cleanup and sanitized
+results; see [consumer onboarding](consumer-onboarding.md). Consumer authors own
+the non-destructive semantics of their declared readiness commands. Bootstrap,
+recovery and stronger verification still require isolated execution before a
+future adapter can support them. A manifest never authorizes code execution.
+Target-specific logic stays with consumers, not Dagster definitions.
 
 ## Preflight and evidence
 
