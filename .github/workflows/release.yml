@@ -1,0 +1,12 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    uses: SpencerRWood/workflows/.github/workflows/release-container.yml@v3
+    permissions:
+      contents: write
+      packages: write
