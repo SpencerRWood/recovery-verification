@@ -1,0 +1,34 @@
+{
+  "schema_version": "1",
+  "targets": [
+    {
+      "id": "example-linux",
+      "owning_repository": "example/linux-consumer",
+      "revision": "1111111111111111111111111111111111111111",
+      "platform": "linux",
+      "adapter": "consumer-command-v1",
+      "entrypoints": {
+        "bootstrap": {"entrypoint": "scripts/bootstrap", "args": [], "timeout_seconds": 300},
+        "recovery": {"entrypoint": "scripts/recover", "args": [], "timeout_seconds": 300}
+      },
+      "validation_commands": [
+        {
+          "id": "synthetic",
+          "levels": ["readiness", "verification", "drill"],
+          "command": {"entrypoint": "scripts/validate", "args": ["--json"], "timeout_seconds": 60}
+        }
+      ],
+      "required_dependencies": [
+        {"id": "consumer-repo", "kind": "repository", "reference": "example/linux-consumer"},
+        {"id": "credentials", "kind": "secret", "reference": "infisical:/example/RECOVERY_TOKEN"},
+        {"id": "image", "kind": "artifact", "reference": "ghcr.io/example/app@sha256:1111111111111111111111111111111111111111111111111111111111111111"},
+        {"id": "runbook", "kind": "runbook", "reference": "docs/recovery.md"}
+      ],
+      "backup_sources": [
+        {"id": "state", "reference": "backup://example/state", "max_age_seconds": 86400}
+      ],
+      "allowed_verification_levels": ["readiness", "verification", "drill"],
+      "cadence_overrides": [{"level": "drill", "interval_seconds": 2592000}]
+    }
+  ]
+}

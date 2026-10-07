@@ -1,0 +1,293 @@
+{
+  "$defs": {
+    "BackupSource": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "reference": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Reference",
+          "type": "string"
+        },
+        "max_age_seconds": {
+          "minimum": 1,
+          "title": "Max Age Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "reference",
+        "max_age_seconds"
+      ],
+      "title": "BackupSource",
+      "type": "object"
+    },
+    "CadenceOverride": {
+      "additionalProperties": false,
+      "description": "Declarative interval override; interpreted by later cadence implementation.",
+      "properties": {
+        "level": {
+          "enum": [
+            "readiness",
+            "verification",
+            "drill"
+          ],
+          "title": "Level",
+          "type": "string"
+        },
+        "interval_seconds": {
+          "minimum": 1,
+          "title": "Interval Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "level",
+        "interval_seconds"
+      ],
+      "title": "CadenceOverride",
+      "type": "object"
+    },
+    "Command": {
+      "additionalProperties": false,
+      "description": "Repository-relative executable and argv, never shell text or inline code.",
+      "properties": {
+        "entrypoint": {
+          "pattern": "^(?:[a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+(?:\\.[a-zA-Z0-9_-]+)*$",
+          "title": "Entrypoint",
+          "type": "string"
+        },
+        "args": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "title": "Args",
+          "type": "array"
+        },
+        "timeout_seconds": {
+          "maximum": 3600,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "entrypoint",
+        "args",
+        "timeout_seconds"
+      ],
+      "title": "Command",
+      "type": "object"
+    },
+    "Dependency": {
+      "additionalProperties": false,
+      "description": "References only; secret values and provider-specific config are forbidden.",
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "repository",
+            "secret",
+            "artifact",
+            "storage",
+            "tool",
+            "runbook"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reference": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Reference",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "reference"
+      ],
+      "title": "Dependency",
+      "type": "object"
+    },
+    "Entrypoints": {
+      "additionalProperties": false,
+      "description": "Both interfaces are declared, even for readiness-only initial consumers.",
+      "properties": {
+        "bootstrap": {
+          "$ref": "#/$defs/Command"
+        },
+        "recovery": {
+          "$ref": "#/$defs/Command"
+        }
+      },
+      "required": [
+        "bootstrap",
+        "recovery"
+      ],
+      "title": "Entrypoints",
+      "type": "object"
+    },
+    "Target": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "owning_repository": {
+          "pattern": "^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$",
+          "title": "Owning Repository",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "platform": {
+          "const": "linux",
+          "title": "Platform",
+          "type": "string"
+        },
+        "adapter": {
+          "const": "consumer-command-v1",
+          "title": "Adapter",
+          "type": "string"
+        },
+        "entrypoints": {
+          "$ref": "#/$defs/Entrypoints"
+        },
+        "validation_commands": {
+          "items": {
+            "$ref": "#/$defs/ValidationCommand"
+          },
+          "minItems": 1,
+          "title": "Validation Commands",
+          "type": "array"
+        },
+        "required_dependencies": {
+          "items": {
+            "$ref": "#/$defs/Dependency"
+          },
+          "title": "Required Dependencies",
+          "type": "array"
+        },
+        "backup_sources": {
+          "items": {
+            "$ref": "#/$defs/BackupSource"
+          },
+          "title": "Backup Sources",
+          "type": "array"
+        },
+        "allowed_verification_levels": {
+          "items": {
+            "enum": [
+              "readiness",
+              "verification",
+              "drill"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Allowed Verification Levels",
+          "type": "array"
+        },
+        "cadence_overrides": {
+          "items": {
+            "$ref": "#/$defs/CadenceOverride"
+          },
+          "title": "Cadence Overrides",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "owning_repository",
+        "revision",
+        "platform",
+        "adapter",
+        "entrypoints",
+        "validation_commands",
+        "required_dependencies",
+        "backup_sources",
+        "allowed_verification_levels",
+        "cadence_overrides"
+      ],
+      "title": "Target",
+      "type": "object"
+    },
+    "ValidationCommand": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "levels": {
+          "items": {
+            "enum": [
+              "readiness",
+              "verification",
+              "drill"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Levels",
+          "type": "array"
+        },
+        "command": {
+          "$ref": "#/$defs/Command"
+        }
+      },
+      "required": [
+        "id",
+        "levels",
+        "command"
+      ],
+      "title": "ValidationCommand",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "targets": {
+      "items": {
+        "$ref": "#/$defs/Target"
+      },
+      "minItems": 1,
+      "title": "Targets",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "targets"
+  ],
+  "title": "Manifest",
+  "type": "object"
+}
