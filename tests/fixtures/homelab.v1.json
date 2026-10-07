@@ -33,7 +33,8 @@
           "command": {
             "entrypoint": "scripts/recovery.py",
             "args": [
-              "preflight"
+              "preflight",
+              "--local-only"
             ],
             "timeout_seconds": 150
           }

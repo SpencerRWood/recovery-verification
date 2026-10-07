@@ -70,8 +70,10 @@ def verify(source: Path, snapshot: Path) -> dict[str, object]:
     local = [check for check in result.checks if check.id != "external_prerequisites"]
     if not local or any(check.state != "passed" for check in local):
         raise ValueError("consumer_local_preflight_failed")
-    if result.readiness_state != "unavailable":
-        raise ValueError("consumer_overstates_readiness")
+    if result.readiness_state != "passed" or any(
+        check.id == "external_prerequisites" for check in result.checks
+    ):
+        raise ValueError("consumer_local_scope_mismatch")
     return {
         "repository": owner,
         "source_revision": git(source, "rev-parse", "HEAD").strip(),
@@ -79,6 +81,7 @@ def verify(source: Path, snapshot: Path) -> dict[str, object]:
         "source_changes_included": bool(git(source, "status", "--porcelain")),
         "checks": [check.model_dump() for check in result.checks],
         "readiness_state": result.readiness_state,
+        "scope": "local_configuration_only",
     }
 
 

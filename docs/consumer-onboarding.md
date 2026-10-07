@@ -74,14 +74,16 @@ to temporary clean Git test snapshots; ignored runtime files and development
 environments are not copied. It reuses each consumer's development tool PATH,
 exports its actual manifest and invokes its actual preflight through the public
 generic adapter. Temporary commits are test fixtures, never delivery commits.
-It requires all local checks to pass and overall readiness to remain unavailable.
-The normalized output reports source/snapshot revisions and includes the explicit
-external-prerequisite limitation. Temporary resources are removed afterward.
+It requires all local checks to pass through the declared `preflight --local-only`
+command. This scopes consumer success to configuration checks; the provider owns
+the external probes described in [daily readiness](daily-readiness.md).
+The normalized output reports source/snapshot revisions and explicit local-only
+scope. Temporary resources are removed afterward.
 
 Audit: both consumers already own canonical Ansible, rollback and health paths.
 The missing onboarding surface was a versioned manifest and safe structured
 preflight. Host apply/check-mode isolation, actual restore testing, backup policy
-and live prerequisite probing are not established by existing syntax or rollback
-checks. Consumer readiness intentionally remains unavailable until those
-capabilities are independently proved. See consumer onboarding runbooks for the
-owning files and operational boundaries.
+are not established by existing syntax or rollback checks. Consumer preflight
+without `--local-only` remains unavailable because it does not perform external
+probes. Local-only success is never proof of full recovery readiness. See consumer
+onboarding runbooks for the owning files and operational boundaries.
