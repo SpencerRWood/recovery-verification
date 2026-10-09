@@ -7,6 +7,7 @@ from pathlib import Path
 
 from recovery_verification.contract import parse_manifest
 from recovery_verification.invocation import invoke_readiness
+from recovery_verification.monthly import run_monthly
 from recovery_verification.preflight import preflight
 from recovery_verification.probes import BoundedProbe
 from recovery_verification.readiness import run_readiness
@@ -20,6 +21,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checkout", type=Path)
     parser.add_argument("--daily", action="store_true")
     parser.add_argument("--weekly", action="store_true")
+    parser.add_argument("--monthly", action="store_true")
     parser.add_argument("--check", action="append", default=[], dest="checks")
     parser.add_argument(
         "--invoke-check", help="Explicitly trust and invoke one readiness check"
@@ -28,16 +30,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         manifest = parse_manifest(args.manifest.read_text(encoding="utf-8"))
         result = preflight(manifest, tuple(args.targets))
-        if args.weekly:
+        if args.weekly or args.monthly:
             if (
                 args.daily
+                or (args.weekly and args.monthly)
                 or args.checks
                 or args.invoke_check
                 or args.checkout is None
                 or len(args.targets) != 1
             ):
                 raise ValueError("weekly requires explicit target and checkout")
-            weekly = run_weekly(
+            weekly = (run_monthly if args.monthly else run_weekly)(
                 manifest,
                 {args.targets[0]: args.checkout},
                 BoundedProbe(),

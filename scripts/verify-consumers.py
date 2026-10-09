@@ -15,7 +15,11 @@ import tempfile
 from pathlib import Path
 
 from recovery_verification.contract import parse_manifest
-from recovery_verification.invocation import invoke_readiness, invoke_verification
+from recovery_verification.invocation import (
+    invoke_drill,
+    invoke_readiness,
+    invoke_verification,
+)
 
 
 def git(root: Path, *args: str) -> str:
@@ -30,7 +34,9 @@ def git(root: Path, *args: str) -> str:
     return result.stdout
 
 
-def verify(source: Path, snapshot: Path, *, weekly: bool = False) -> dict[str, object]:
+def verify(
+    source: Path, snapshot: Path, *, weekly: bool = False, monthly: bool = False
+) -> dict[str, object]:
     names = git(source, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
     for name in set(names.split("\x00")) - {""}:
         path = source / name
@@ -65,12 +71,20 @@ def verify(source: Path, snapshot: Path, *, weekly: bool = False) -> dict[str, o
         )
         manifest = parse_manifest(export.stdout)
         target = manifest.targets[0]
+        if weekly and "verification" not in target.allowed_verification_levels:
+            raise ValueError("verification_capability_required")
         result = invoke_readiness(target, snapshot, "consumer_preflight", trusted=True)
         verification = (
             invoke_verification(target, snapshot, "consumer_weekly", trusted=True)
-            if weekly
+            if (weekly or monthly)
+            and "verification" in target.allowed_verification_levels
             else None
         )
+        drills = [
+            invoke_drill(target, snapshot, command.id, trusted=True)
+            for command in target.validation_commands
+            if monthly and "drill" in command.levels
+        ]
     finally:
         os.environ["PATH"] = previous_path
     local = [check for check in result.checks if check.id != "external_prerequisites"]
@@ -82,6 +96,8 @@ def verify(source: Path, snapshot: Path, *, weekly: bool = False) -> dict[str, o
         raise ValueError("consumer_local_scope_mismatch")
     if verification is not None and verification.readiness_state != "passed":
         raise ValueError("consumer_executable_verification_failed")
+    if any(drill.readiness_state != "passed" for drill in drills):
+        raise ValueError("consumer_isolated_drill_failed")
     return {
         "repository": owner,
         "source_revision": git(source, "rev-parse", "HEAD").strip(),
@@ -90,9 +106,11 @@ def verify(source: Path, snapshot: Path, *, weekly: bool = False) -> dict[str, o
         "checks": [check.model_dump() for check in result.checks],
         "readiness_state": result.readiness_state,
         "scope": "local_configuration_and_representative_recovery"
-        if weekly
+        if weekly or monthly
         else "local_configuration_only",
         "weekly": verification.model_dump(mode="json") if verification else None,
+        "ephemeral_rebuild": target.ephemeral_rebuild.model_dump() if monthly else None,
+        "drills": [drill.model_dump(mode="json") for drill in drills],
     }
 
 
@@ -100,6 +118,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkout", type=Path, nargs="*")
     parser.add_argument("--weekly", action="store_true")
+    parser.add_argument("--monthly", action="store_true")
     parser.add_argument("--configured-checkouts", action="store_true")
     args = parser.parse_args()
     results = []
@@ -111,6 +130,8 @@ def main() -> int:
     signal.signal(signal.SIGALRM, timed_out)
     signal.alarm(40)
     try:
+        if args.weekly and args.monthly:
+            raise ValueError("ambiguous_verification_level")
         if args.configured_checkouts:
             if args.checkout:
                 raise ValueError("ambiguous_consumer_checkouts")
@@ -130,7 +151,14 @@ def main() -> int:
             for index, source in enumerate(args.checkout):
                 snapshot = Path(directory) / str(index)
                 snapshot.mkdir()
-                results.append(verify(source.resolve(), snapshot, weekly=args.weekly))
+                results.append(
+                    verify(
+                        source.resolve(),
+                        snapshot,
+                        weekly=args.weekly,
+                        monthly=args.monthly,
+                    )
+                )
     except OSError, ValueError, KeyError, subprocess.SubprocessError:
         sys.stdout.write(
             json.dumps({"state": "failed", "reason": "consumer_verification_failed"})

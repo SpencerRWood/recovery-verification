@@ -152,6 +152,12 @@ def test_capability_selection_source_and_daily_evidence_guards(
             weekly.extend_weekly(manifest, {}, daily, target_ids=selected)
     target = document["targets"][0]
     target["allowed_verification_levels"] = ["readiness"]
+    target["ephemeral_rebuild"] = {
+        "supported": False,
+        "provider": None,
+        "environment": None,
+        "reason": "not_supported",
+    }
     target["cadence_overrides"] = []
     target["validation_commands"][0]["levels"] = ["readiness"]
     with pytest.raises(ValueError, match="verification capability"):

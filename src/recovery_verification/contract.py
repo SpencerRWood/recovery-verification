@@ -60,6 +60,23 @@ class CadenceOverride(ContractModel):
     interval_seconds: Annotated[int, Field(ge=1)]
 
 
+class EphemeralRebuild(ContractModel):
+    """Explicit approval, never a hostname, inventory or production selector."""
+
+    supported: bool
+    provider: Identifier | None
+    environment: Literal["disposable-linux"] | None
+    reason: Identifier
+
+    @model_validator(mode="after")
+    def consistent_approval(self) -> Self:
+        if self.supported != (self.provider is not None):
+            raise ValueError("provider approval required")
+        if self.supported != (self.environment is not None):
+            raise ValueError("disposable Linux approval required")
+        return self
+
+
 def _unique(values: tuple[str, ...]) -> bool:
     return len(values) == len(set(values))
 
@@ -78,6 +95,7 @@ class Target(ContractModel):
     backup_sources: tuple[BackupSource, ...]
     allowed_verification_levels: Annotated[tuple[Level, ...], Field(min_length=1)]
     cadence_overrides: tuple[CadenceOverride, ...]
+    ephemeral_rebuild: EphemeralRebuild
 
     @model_validator(mode="after")
     def consistent_capabilities(self) -> Self:
@@ -92,6 +110,8 @@ class Target(ContractModel):
         if not all(_unique(group) for group in groups):
             raise ValueError("duplicate declaration")
         allowed = set(self.allowed_verification_levels)
+        if self.ephemeral_rebuild.supported != ("drill" in allowed):
+            raise ValueError("drill capability must match ephemeral approval")
         for check in self.validation_commands:
             if not _unique(check.levels) or not set(check.levels) <= allowed:
                 raise ValueError("invalid validation levels")

@@ -1,5 +1,6 @@
 """Reusable check/evidence models and conservative normalized readiness."""
 
+from datetime import datetime
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
@@ -128,4 +129,86 @@ class ConsumerVerificationResult(ContractModel):
             )
         ):
             raise ValueError("invalid verification evidence")
+        return self
+
+
+DrillPhase = Literal[
+    "provision",
+    "bootstrap",
+    "dependencies",
+    "secrets",
+    "recovery",
+    "restore",
+    "workloads",
+    "validation",
+    "cleanup",
+]
+DRILL_PHASES: tuple[DrillPhase, ...] = (
+    "provision",
+    "bootstrap",
+    "dependencies",
+    "secrets",
+    "recovery",
+    "restore",
+    "workloads",
+    "validation",
+    "cleanup",
+)
+
+
+class DrillCheck(ConsumerCheck):
+    phase: DrillPhase
+
+
+class SnapshotEvidence(ContractModel):
+    source_id: Identifier
+    timestamp: datetime
+    artifact_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class ConsumerDrillResult(ContractModel):
+    """Complete phase evidence, including independently observed destruction."""
+
+    schema_version: Literal["1"] = "1"
+    mode: Literal["drill"] = "drill"
+    provider: Identifier
+    environment: Literal["disposable-linux"] = "disposable-linux"
+    resource_reference: Annotated[
+        str, Field(pattern=r"^temporary://[A-Za-z0-9_-]{1,128}$")
+    ]
+    started_at: datetime
+    ended_at: datetime
+    duration_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    snapshots: Annotated[tuple[SnapshotEvidence, ...], Field(max_length=128)]
+    readiness_state: State
+    checks: tuple[DrillCheck, ...]
+
+    @model_validator(mode="after")
+    def complete_evidence(self) -> Self:
+        if (
+            tuple(check.phase for check in self.checks) != DRILL_PHASES
+            or len({check.id for check in self.checks}) != len(self.checks)
+            or normalize_readiness(tuple(check.state for check in self.checks))
+            != self.readiness_state
+            or any(check.state == "not_applicable" for check in self.checks)
+            or self.started_at.tzinfo is None
+            or self.ended_at.tzinfo is None
+            or self.ended_at < self.started_at
+            or abs(
+                (self.ended_at - self.started_at).total_seconds()
+                - self.duration_seconds
+            )
+            > 5
+            or len({item.source_id for item in self.snapshots}) != len(self.snapshots)
+            or any(
+                item.timestamp.tzinfo is None or item.timestamp > self.started_at
+                for item in self.snapshots
+            )
+        ):
+            raise ValueError("invalid drill evidence")
+        blocked = False
+        for check in self.checks[:-1]:
+            if blocked and check.state != "skipped":
+                raise ValueError("drill continued after failure")
+            blocked = blocked or check.state != "passed"
         return self

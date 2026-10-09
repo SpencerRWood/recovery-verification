@@ -5,6 +5,7 @@
       "id": "infrastructure-dev",
       "owning_repository": "SpencerRWood/infrastructure",
       "platform": "linux",
+      "ephemeral_rebuild": {"supported": false, "provider": null, "environment": null, "reason": "isolated_bootstrap_not_supported"},
       "adapter": "consumer-command-v1",
       "entrypoints": {
         "bootstrap": {

@@ -144,6 +144,53 @@
       "title": "Entrypoints",
       "type": "object"
     },
+    "EphemeralRebuild": {
+      "additionalProperties": false,
+      "description": "Explicit approval, never a hostname, inventory or production selector.",
+      "properties": {
+        "supported": {
+          "title": "Supported",
+          "type": "boolean"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Provider"
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "const": "disposable-linux",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Environment"
+        },
+        "reason": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "supported",
+        "provider",
+        "environment",
+        "reason"
+      ],
+      "title": "EphemeralRebuild",
+      "type": "object"
+    },
     "Target": {
       "additionalProperties": false,
       "properties": {
@@ -216,6 +263,9 @@
           },
           "title": "Cadence Overrides",
           "type": "array"
+        },
+        "ephemeral_rebuild": {
+          "$ref": "#/$defs/EphemeralRebuild"
         }
       },
       "required": [
@@ -229,7 +279,8 @@
         "required_dependencies",
         "backup_sources",
         "allowed_verification_levels",
-        "cadence_overrides"
+        "cadence_overrides",
+        "ephemeral_rebuild"
       ],
       "title": "Target",
       "type": "object"

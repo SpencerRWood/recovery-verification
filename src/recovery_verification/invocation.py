@@ -10,7 +10,11 @@ from pathlib import Path
 from time import monotonic
 
 from recovery_verification.contract import Level, Target, _reject_duplicate_keys
-from recovery_verification.models import ConsumerResult, ConsumerVerificationResult
+from recovery_verification.models import (
+    ConsumerDrillResult,
+    ConsumerResult,
+    ConsumerVerificationResult,
+)
 
 OUTPUT_LIMIT = 65536
 
@@ -105,9 +109,29 @@ def invoke_verification(
     return result
 
 
+def invoke_drill(
+    target: Target, checkout: Path, check_id: str, *, trusted: bool = False
+) -> ConsumerDrillResult:
+    """Execute only an approved consumer's isolated drill interface."""
+    if not target.ephemeral_rebuild.supported:
+        raise InvocationError("ephemeral_rebuild_unsupported")
+    result = _invoke(target, checkout, check_id, trusted=trusted, level="drill")
+    assert isinstance(result, ConsumerDrillResult)  # noqa: S101
+    if result.provider != target.ephemeral_rebuild.provider:
+        raise InvocationError("provider_approval_mismatch")
+    restored = next(check for check in result.checks if check.phase == "restore")
+    observed = {item.source_id for item in result.snapshots}
+    declared = {item.id for item in target.backup_sources}
+    if not observed <= declared or (
+        restored.state == "passed" and observed != declared
+    ):
+        raise InvocationError("backup_evidence_mismatch")
+    return result
+
+
 def _invoke(
     target: Target, checkout: Path, check_id: str, *, trusted: bool, level: Level
-) -> ConsumerResult | ConsumerVerificationResult:
+) -> ConsumerResult | ConsumerVerificationResult | ConsumerDrillResult:
     if not trusted:
         raise InvocationError("explicit_trust_required")
     root = checkout.resolve()
@@ -145,17 +169,23 @@ def _invoke(
             try:
                 output = _output(process, command.timeout_seconds)
             finally:
-                _stop(process, graceful=level == "verification")
+                _stop(process, graceful=level != "readiness")
         if _git(root, "rev-parse", "HEAD") != target.revision:
             raise InvocationError("revision_changed")
         if _git(root, "status", "--porcelain", "--untracked-files=all"):
             raise InvocationError("checkout_changed")
         document = json.loads(output, object_pairs_hook=_reject_duplicate_keys)
-        result = (
-            ConsumerResult.model_validate_json(json.dumps(document))
-            if level == "readiness"
-            else ConsumerVerificationResult.model_validate_json(json.dumps(document))
-        )
+        models: dict[
+            Level,
+            type[ConsumerResult]
+            | type[ConsumerVerificationResult]
+            | type[ConsumerDrillResult],
+        ] = {
+            "readiness": ConsumerResult,
+            "verification": ConsumerVerificationResult,
+            "drill": ConsumerDrillResult,
+        }
+        result = models[level].model_validate_json(json.dumps(document))
         expected_exit = {
             "passed": 0,
             "failed": 1,
