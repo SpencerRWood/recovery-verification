@@ -169,3 +169,8 @@ name = "weekly-consumer-contracts"
 argv = ["uv", "run", "--frozen", "python", "scripts/verify-consumers.py", "--weekly", "--configured-checkouts"]
 required = true
 timeout_seconds = 60
+
+[tool.wood.architecture]
+domain = "engineering"
+capability = "reliability-recovery"
+kind = "orchestration-service"
