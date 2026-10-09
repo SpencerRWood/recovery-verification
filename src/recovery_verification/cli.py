@@ -10,6 +10,7 @@ from recovery_verification.invocation import invoke_readiness
 from recovery_verification.preflight import preflight
 from recovery_verification.probes import BoundedProbe
 from recovery_verification.readiness import run_readiness
+from recovery_verification.weekly import run_weekly
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -18,6 +19,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", action="append", default=[], dest="targets")
     parser.add_argument("--checkout", type=Path)
     parser.add_argument("--daily", action="store_true")
+    parser.add_argument("--weekly", action="store_true")
     parser.add_argument("--check", action="append", default=[], dest="checks")
     parser.add_argument(
         "--invoke-check", help="Explicitly trust and invoke one readiness check"
@@ -26,6 +28,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         manifest = parse_manifest(args.manifest.read_text(encoding="utf-8"))
         result = preflight(manifest, tuple(args.targets))
+        if args.weekly:
+            if (
+                args.daily
+                or args.checks
+                or args.invoke_check
+                or args.checkout is None
+                or len(args.targets) != 1
+            ):
+                raise ValueError("weekly requires explicit target and checkout")
+            weekly = run_weekly(
+                manifest,
+                {args.targets[0]: args.checkout},
+                BoundedProbe(),
+                target_ids=tuple(args.targets),
+            )
+            sys.stdout.write(weekly.model_dump_json() + "\n")
+            return {"READY": 0, "NOT_READY": 1, "UNKNOWN": 4}[weekly.readiness]
         if args.daily:
             if args.checkout is None or len(args.targets) != 1 or args.invoke_check:
                 raise ValueError("daily requires explicit target and checkout")

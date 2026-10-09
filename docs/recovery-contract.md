@@ -57,9 +57,15 @@ readiness-only adapter with revision/ownership/clean-checkout validation,
 entrypoint containment, bounded output/timeout, process cleanup and sanitized
 results; see [consumer onboarding](consumer-onboarding.md). Consumer authors own
 the non-destructive semantics of their declared readiness commands. Bootstrap,
-recovery and stronger verification still require isolated execution before a
-future adapter can support them. A manifest never authorizes code execution.
+recovery and drill execution remain outside these adapters.
+A manifest never authorizes code execution.
 Target-specific logic stays with consumers, not Dagster definitions.
+
+OP-497 adds the explicitly trusted `invoke_verification` adapter for approved
+isolated consumer validation commands and a strict verification result contract.
+See [weekly verification](weekly-verification.md) for required evidence phases,
+cleanup semantics, timeouts and representative consumer coverage. Bootstrap,
+rollback and drill declarations remain unexecuted by these provider adapters.
 
 ## Preflight and evidence
 

@@ -159,3 +159,13 @@ upload_to_vcs_release = true
 [tool.wood.openproject]
 project_id = 3
 initiative_id = 486
+
+[tool.wood.verify]
+version = 1
+retry_safe = true
+
+[[tool.wood.verify.checks]]
+name = "weekly-consumer-contracts"
+argv = ["uv", "run", "--frozen", "python", "scripts/verify-consumers.py", "--weekly", "--configured-checkouts"]
+required = true
+timeout_seconds = 60

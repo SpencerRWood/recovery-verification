@@ -7,8 +7,9 @@ from typing import Any
 import pytest
 from dagster import Definitions, RunRequest, SkipReason
 from dagster._core.workspace.autodiscovery import loadable_targets_from_python_module
+from tests.unit.test_weekly import consumer
 
-from recovery_verification import readiness
+from recovery_verification import readiness, weekly
 from recovery_verification.dagster.definitions import defs
 from recovery_verification.dagster.jobs import (
     PreflightConfig,
@@ -33,6 +34,7 @@ def test_definitions_and_smoke() -> None:
         "runtime_smoke_job",
         "contract_preflight_job",
         "recovery_readiness_daily",
+        "recovery_verification_weekly",
         "__ASSET_JOB",
     }
     assert defs.schedules
@@ -136,3 +138,46 @@ def test_daily_schedule_explicit_configuration(
     source.write_text('{"manifest_json":"invalid"}')
     assert isinstance(recovery_readiness_daily_schedule(), SkipReason)
     assert recovery_readiness_daily_schedule.execution_timezone == "UTC"
+
+
+@pytest.mark.parametrize("state", ["passed", "failed", "unavailable"])
+def test_weekly_job_reuses_daily_asset_and_preserves_evidence(
+    document: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+) -> None:
+    for name in ("_checkout", "_interfaces", "_consumer"):
+        monkeypatch.setattr(readiness, name, lambda *_: result("passed", "local_valid"))
+    monkeypatch.setattr(weekly, "_checkout", lambda *_: result("passed", "local_valid"))
+    monkeypatch.setattr(
+        BoundedProbe, "__call__", lambda *_: result("passed", "probe_valid")
+    )
+    observed = consumer(state)
+    monkeypatch.setattr(weekly, "invoke_verification", lambda *_a, **_k: observed)
+    config = {
+        "manifest_json": json.dumps(document),
+        "checkouts": {"example-linux": str(tmp_path)},
+    }
+    run = defs.resolve_job_def("recovery_verification_weekly").execute_in_process(
+        run_config={
+            "ops": {
+                "recovery_readiness": {"config": config},
+                "recovery_verification": {"config": config},
+            }
+        }
+    )
+    assert run.success
+    report = json.loads(run.output_for_node("recovery_verification"))
+    daily = json.loads(run.output_for_node("recovery_readiness"))
+    assert report["checks"][: len(daily["checks"])] == daily["checks"]
+    assert report["consumer_evidence"][
+        "example-linux/synthetic"
+    ] == observed.model_dump(mode="json")
+    evaluations = run.get_asset_check_evaluations()
+    assert len(evaluations) == 2
+    check = next(
+        item for item in evaluations if item.check_name == "recovery_paths_verified"
+    )
+    assert check.passed == (state == "passed")
+    assert check.metadata["evidence"].value == report

@@ -1,7 +1,8 @@
 # Recovery Verification
 
 Standalone Python/Dagster provider for a versioned recovery consumer contract.
-It validates declarations and runs non-destructive daily prerequisite checks.
+It validates declarations, runs daily prerequisite checks and orchestrates isolated
+weekly executable recovery verification.
 Consumers own bootstrap, provisioning, restore, rollback, and service validation.
 
 ## Local development
@@ -28,8 +29,9 @@ in its op config. It uses the same pure validator as the CLI. `runtime_smoke_job
 provides the platform's fast infrastructure-only smoke check.
 `recovery_readiness_daily` uses the shared readiness asset and prerequisite asset
 check. Its UTC schedule is stopped by default until explicitly configured and
-enabled. Weekly verification, monthly drills and production deployment remain
-separate work.
+enabled. `recovery_verification_weekly` selects the same daily asset/check and adds
+consumer-owned executable checks. See [weekly verification](docs/weekly-verification.md).
+Monthly drills and production orchestration remain separate work.
 
 ## Structure and contracts
 
@@ -37,6 +39,7 @@ separate work.
 - `models.py`: checks, evidence, and conservative normalized readiness.
 - `preflight.py`: deterministic validation evidence and target selection.
 - `readiness.py`: shared daily checks and revision-bound readiness evidence.
+- `weekly.py`: daily evidence reuse and generic executable verification.
 - `probes.py`: bounded read-only prerequisite probes with sanitized output.
 - `adapters.py`: declarative consumer validation plans; no executor.
 - `dagster/definitions.py`: generic code location.
