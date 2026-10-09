@@ -9,8 +9,8 @@ from contextlib import suppress
 from pathlib import Path
 from time import monotonic
 
-from recovery_verification.contract import Target, _reject_duplicate_keys
-from recovery_verification.models import ConsumerResult
+from recovery_verification.contract import Level, Target, _reject_duplicate_keys
+from recovery_verification.models import ConsumerResult, ConsumerVerificationResult
 
 OUTPUT_LIMIT = 65536
 
@@ -33,7 +33,12 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _stop(process: subprocess.Popen[bytes]) -> None:
+def _stop(process: subprocess.Popen[bytes], *, graceful: bool = False) -> None:
+    if graceful and process.poll() is None:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=15)
     with suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGKILL)
     process.wait(timeout=10)
@@ -59,9 +64,11 @@ def _output(process: subprocess.Popen[bytes], timeout: int) -> bytes:
     return bytes(output)
 
 
-def _command_path(target: Target, root: Path, check_id: str) -> Path:
+def _command_path(
+    target: Target, root: Path, check_id: str, level: Level = "readiness"
+) -> Path:
     checks = [check for check in target.validation_commands if check.id == check_id]
-    if len(checks) != 1 or "readiness" not in checks[0].levels:
+    if len(checks) != 1 or level not in checks[0].levels:
         raise InvocationError("unsupported_readiness_check")
     command = checks[0].command
     executable = root / command.entrypoint
@@ -84,10 +91,27 @@ def invoke_readiness(
     Trust is an explicit caller grant for this repository/revision. A manifest
     cannot establish it. Consumer authors own the non-destructive semantics.
     """
+    result = _invoke(target, checkout, check_id, trusted=trusted, level="readiness")
+    assert isinstance(result, ConsumerResult)  # noqa: S101
+    return result
+
+
+def invoke_verification(
+    target: Target, checkout: Path, check_id: str, *, trusted: bool = False
+) -> ConsumerVerificationResult:
+    """Explicitly approved isolated consumer verification; never a drill."""
+    result = _invoke(target, checkout, check_id, trusted=trusted, level="verification")
+    assert isinstance(result, ConsumerVerificationResult)  # noqa: S101
+    return result
+
+
+def _invoke(
+    target: Target, checkout: Path, check_id: str, *, trusted: bool, level: Level
+) -> ConsumerResult | ConsumerVerificationResult:
     if not trusted:
         raise InvocationError("explicit_trust_required")
     root = checkout.resolve()
-    executable = _command_path(target, root, check_id)
+    executable = _command_path(target, root, check_id, level)
     command = next(
         check.command for check in target.validation_commands if check.id == check_id
     )
@@ -121,13 +145,17 @@ def invoke_readiness(
             try:
                 output = _output(process, command.timeout_seconds)
             finally:
-                _stop(process)
+                _stop(process, graceful=level == "verification")
         if _git(root, "rev-parse", "HEAD") != target.revision:
             raise InvocationError("revision_changed")
         if _git(root, "status", "--porcelain", "--untracked-files=all"):
             raise InvocationError("checkout_changed")
         document = json.loads(output, object_pairs_hook=_reject_duplicate_keys)
-        result = ConsumerResult.model_validate_json(json.dumps(document))
+        result = (
+            ConsumerResult.model_validate_json(json.dumps(document))
+            if level == "readiness"
+            else ConsumerVerificationResult.model_validate_json(json.dumps(document))
+        )
         expected_exit = {
             "passed": 0,
             "failed": 1,

@@ -26,6 +26,7 @@ from recovery_verification.contract import parse_manifest
 from recovery_verification.preflight import preflight
 from recovery_verification.probes import BoundedProbe
 from recovery_verification.readiness import ReadinessReport, run_readiness
+from recovery_verification.weekly import WeeklyReport, extend_weekly
 
 
 class PreflightConfig(Config):
@@ -96,6 +97,36 @@ recovery_readiness_daily = define_asset_job(
 )
 
 
+@asset(io_manager_key="io_manager")
+def recovery_verification(recovery_readiness: str, config: DailyConfig) -> str:
+    """Consume the selected daily asset, then add executable weekly checks."""
+    daily = ReadinessReport.model_validate_json(recovery_readiness)
+    manifest = parse_manifest(config.manifest_json)
+    report = extend_weekly(
+        manifest,
+        {target: Path(root) for target, root in config.checkouts.items()},
+        daily,
+        target_ids=tuple(config.target_ids),
+    )
+    return report.model_dump_json()
+
+
+@asset_check(asset=recovery_verification)
+def recovery_paths_verified(recovery_verification: str) -> AssetCheckResult:
+    report = WeeklyReport.model_validate_json(recovery_verification)
+    return AssetCheckResult(
+        passed=report.readiness == "READY",
+        metadata={"evidence": MetadataValue.json(report.model_dump(mode="json"))},
+    )
+
+
+recovery_verification_weekly = define_asset_job(
+    "recovery_verification_weekly",
+    selection=AssetSelection.assets(recovery_readiness, recovery_verification),
+    executor_def=in_process_executor,
+)
+
+
 @schedule(
     job=recovery_readiness_daily, cron_schedule="0 6 * * *", execution_timezone="UTC"
 )
@@ -115,9 +146,9 @@ def recovery_readiness_daily_schedule() -> RunRequest | SkipReason:
 
 
 daily_definitions = Definitions(
-    assets=[recovery_readiness],
-    asset_checks=[prerequisites_ready],
-    jobs=[recovery_readiness_daily],
+    assets=[recovery_readiness, recovery_verification],
+    asset_checks=[prerequisites_ready, recovery_paths_verified],
+    jobs=[recovery_readiness_daily, recovery_verification_weekly],
     schedules=[recovery_readiness_daily_schedule],
     resources={"io_manager": mem_io_manager},
 )

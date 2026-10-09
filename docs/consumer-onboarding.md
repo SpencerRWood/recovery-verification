@@ -5,7 +5,9 @@ the provider. Each owns a version-controlled `recovery/consumer.v1.json` recipe
 and `scripts/recovery.py` exporter/preflight. Export pins the exact clean source
 revision rather than storing a self-referential hash in its own Git commit.
 
-Both targets advertise readiness only. Bootstrap produces a normal Ansible
+Both targets now advertise readiness and verification. See
+[weekly verification](weekly-verification.md) for the isolated execution contract.
+Bootstrap produces a normal Ansible
 reconstruction plan; it never applies to a live target. Recovery directly declares
 the existing previous-known-good `scripts/rollback.py` interface, with the owning
 environment and preview default. Its required failed-release input and operational
