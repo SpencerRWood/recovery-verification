@@ -150,6 +150,12 @@ def test_source_drift_supersedes_failed_observations(
 
 def test_readiness_capability_required(document: dict[str, Any]) -> None:
     target = document["targets"][0]
+    target["ephemeral_rebuild"] = {
+        "supported": False,
+        "provider": None,
+        "environment": None,
+        "reason": "not_supported",
+    }
     target["allowed_verification_levels"] = ["verification"]
     target["validation_commands"][0]["levels"] = ["verification"]
     target["cadence_overrides"] = []

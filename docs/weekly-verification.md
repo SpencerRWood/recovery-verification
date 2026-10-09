@@ -98,7 +98,8 @@ uv run python scripts/verify-consumers.py --weekly \
   /path/to/infrastructure /path/to/homelab
 ```
 
-The required repository-owned application check is `weekly-consumer-contracts`.
+The required repository-owned application check is `monthly-consumer-contracts`
+(OP-498); it retains these weekly checks and validates explicit drill capability.
 Set `RECOVERY_CONSUMER_CHECKOUTS` to a non-secret JSON array of the two source
 checkout paths and run `wood repo verify --json`. The check uses explicit configured
 paths, has a 40-second internal deadline plus adapter cleanup grace, and returns

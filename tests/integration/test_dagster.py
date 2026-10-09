@@ -7,15 +7,18 @@ from typing import Any
 import pytest
 from dagster import Definitions, RunRequest, SkipReason
 from dagster._core.workspace.autodiscovery import loadable_targets_from_python_module
+from tests.unit.test_monthly import Provider, unsupported
 from tests.unit.test_weekly import consumer
 
-from recovery_verification import readiness, weekly
+from recovery_verification import monthly, readiness, weekly
+from recovery_verification.contract import parse_manifest
 from recovery_verification.dagster.definitions import defs
 from recovery_verification.dagster.jobs import (
     PreflightConfig,
     contract_preflight,
     recovery_readiness_daily_schedule,
 )
+from recovery_verification.drill import execute_drill
 from recovery_verification.probes import BoundedProbe, result
 
 
@@ -35,6 +38,7 @@ def test_definitions_and_smoke() -> None:
         "contract_preflight_job",
         "recovery_readiness_daily",
         "recovery_verification_weekly",
+        "recovery_drill_monthly",
         "__ASSET_JOB",
     }
     assert defs.schedules
@@ -180,4 +184,54 @@ def test_weekly_job_reuses_daily_asset_and_preserves_evidence(
         item for item in evaluations if item.check_name == "recovery_paths_verified"
     )
     assert check.passed == (state == "passed")
+    assert check.metadata["evidence"].value == report
+
+
+@pytest.mark.parametrize("supported", [True, False])
+def test_monthly_job_reuses_shared_daily_evidence(
+    document: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    supported: bool,
+) -> None:
+    manifest = (
+        parse_manifest(json.dumps(document)) if supported else unsupported(document)
+    )
+    for module, names in (
+        (readiness, ("_checkout", "_interfaces", "_consumer")),
+        (weekly, ("_checkout",)),
+        (monthly, ("_checkout",)),
+    ):
+        for name in names:
+            monkeypatch.setattr(module, name, lambda *_: result("passed", "fixture_ok"))
+    monkeypatch.setattr(
+        BoundedProbe, "__call__", lambda *_: result("passed", "fixture_ok")
+    )
+    monkeypatch.setattr(weekly, "invoke_verification", lambda *_a, **_k: consumer())
+    if supported:
+        observed = execute_drill(manifest.targets[0], Provider())
+        monkeypatch.setattr(monthly, "invoke_drill", lambda *_a, **_k: observed)
+    config = {
+        "manifest_json": manifest.model_dump_json(),
+        "checkouts": {"example-linux": str(tmp_path)},
+    }
+    run = defs.resolve_job_def("recovery_drill_monthly").execute_in_process(
+        run_config={
+            "ops": {
+                "recovery_readiness": {"config": config},
+                "recovery_drill": {"config": config},
+            }
+        }
+    )
+    assert run.success
+    report = json.loads(run.output_for_node("recovery_drill"))
+    daily = json.loads(run.output_for_node("recovery_readiness"))
+    assert report["checks"][: len(daily["checks"])] == daily["checks"]
+    assert report["readiness"] == ("READY" if supported else "UNKNOWN")
+    check = next(
+        item
+        for item in run.get_asset_check_evaluations()
+        if item.check_name == "isolated_recovery_proven"
+    )
+    assert check.passed == supported
     assert check.metadata["evidence"].value == report

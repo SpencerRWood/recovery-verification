@@ -165,7 +165,7 @@ version = 1
 retry_safe = true
 
 [[tool.wood.verify.checks]]
-name = "weekly-consumer-contracts"
-argv = ["uv", "run", "--frozen", "python", "scripts/verify-consumers.py", "--weekly", "--configured-checkouts"]
+name = "monthly-consumer-contracts"
+argv = ["uv", "run", "--frozen", "python", "scripts/verify-consumers.py", "--monthly", "--configured-checkouts"]
 required = true
 timeout_seconds = 60

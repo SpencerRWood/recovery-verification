@@ -59,6 +59,12 @@ def test_invalid_selection(
 
 def test_disallowed_level(document: dict[str, Any]) -> None:
     target = document["targets"][0]
+    target["ephemeral_rebuild"] = {
+        "supported": False,
+        "provider": None,
+        "environment": None,
+        "reason": "not_supported",
+    }
     target["allowed_verification_levels"] = ["readiness"]
     target["validation_commands"][0]["levels"] = ["readiness"]
     target["cadence_overrides"] = []

@@ -23,6 +23,7 @@ from dagster import (
 from pydantic import Field
 
 from recovery_verification.contract import parse_manifest
+from recovery_verification.monthly import MonthlyReport, extend_monthly
 from recovery_verification.preflight import preflight
 from recovery_verification.probes import BoundedProbe
 from recovery_verification.readiness import ReadinessReport, run_readiness
@@ -127,6 +128,33 @@ recovery_verification_weekly = define_asset_job(
 )
 
 
+@asset(io_manager_key="io_manager")
+def recovery_drill(recovery_readiness: str, config: DailyConfig) -> str:
+    """Reuse the daily asset; weekly fallback runs only for unsupported targets."""
+    return extend_monthly(
+        parse_manifest(config.manifest_json),
+        {target: Path(root) for target, root in config.checkouts.items()},
+        ReadinessReport.model_validate_json(recovery_readiness),
+        target_ids=tuple(config.target_ids),
+    ).model_dump_json()
+
+
+@asset_check(asset=recovery_drill)
+def isolated_recovery_proven(recovery_drill: str) -> AssetCheckResult:
+    report = MonthlyReport.model_validate_json(recovery_drill)
+    return AssetCheckResult(
+        passed=report.readiness == "READY",
+        metadata={"evidence": MetadataValue.json(report.model_dump(mode="json"))},
+    )
+
+
+recovery_drill_monthly = define_asset_job(
+    "recovery_drill_monthly",
+    selection=AssetSelection.assets(recovery_readiness, recovery_drill),
+    executor_def=in_process_executor,
+)
+
+
 @schedule(
     job=recovery_readiness_daily, cron_schedule="0 6 * * *", execution_timezone="UTC"
 )
@@ -146,9 +174,17 @@ def recovery_readiness_daily_schedule() -> RunRequest | SkipReason:
 
 
 daily_definitions = Definitions(
-    assets=[recovery_readiness, recovery_verification],
-    asset_checks=[prerequisites_ready, recovery_paths_verified],
-    jobs=[recovery_readiness_daily, recovery_verification_weekly],
+    assets=[recovery_readiness, recovery_verification, recovery_drill],
+    asset_checks=[
+        prerequisites_ready,
+        recovery_paths_verified,
+        isolated_recovery_proven,
+    ],
+    jobs=[
+        recovery_readiness_daily,
+        recovery_verification_weekly,
+        recovery_drill_monthly,
+    ],
     schedules=[recovery_readiness_daily_schedule],
     resources={"io_manager": mem_io_manager},
 )

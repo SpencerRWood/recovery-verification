@@ -6,6 +6,7 @@
       "owning_repository": "example/linux-consumer",
       "revision": "1111111111111111111111111111111111111111",
       "platform": "linux",
+      "ephemeral_rebuild": {"supported": true, "provider": "fixture-linux", "environment": "disposable-linux", "reason": "approved_fixture_provider"},
       "adapter": "consumer-command-v1",
       "entrypoints": {
         "bootstrap": {"entrypoint": "scripts/bootstrap", "args": [], "timeout_seconds": 300},
