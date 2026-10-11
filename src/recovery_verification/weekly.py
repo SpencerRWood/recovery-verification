@@ -128,6 +128,7 @@ def extend_weekly(
                         timestamp=datetime.now(UTC),
                         duration_seconds=monotonic() - start,
                         state=result.readiness_state,
+                        provenance=result.provenance,
                         reason="consumer_executable_verification",
                         category="recovery_prerequisite"
                         if result.readiness_state == "failed"
@@ -157,6 +158,7 @@ def extend_weekly(
         manifest_sha256=daily.manifest_sha256,
         timestamp=datetime.now(UTC),
         target_revisions=daily.target_revisions,
+        provenance=daily.provenance,
         checks=observations,
         readiness="UNKNOWN" if superseded else readiness_state(observations),
         currency="superseded" if superseded else "current",

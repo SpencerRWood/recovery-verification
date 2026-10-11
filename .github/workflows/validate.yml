@@ -2,11 +2,15 @@ name: Validate
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'release/v*']
+  push:
+    branches: ['**']
 
 permissions:
   contents: read
 
 jobs:
   validation:
-    uses: SpencerRWood/workflows/.github/workflows/validate.yml@v3
+    uses: SpencerRWood/workflows/.github/workflows/validate.yml@9307f9b80141f4ed9c463af360a1b13a49ca3353
+    with:
+      workflow_revision: 9307f9b80141f4ed9c463af360a1b13a49ca3353
