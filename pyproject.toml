@@ -160,15 +160,33 @@ upload_to_vcs_release = true
 project_id = 3
 initiative_id = 486
 
+[tool.wood.branching]
+strategy = "release"
+release_id = 20
+release_branch = "release/v0.6.0"
+scope_reference = "docs/releases/v0.6.0.md: user approval 2026-10-11, Decisions 1 and 2"
+
 [tool.wood.verify]
 version = 1
 retry_safe = true
+
+[[tool.wood.verify.checks]]
+name = "workflow-publication-safety"
+argv = ["uv", "run", "--frozen", "python", "scripts/verify-workflows.py"]
+required = true
+timeout_seconds = 40
 
 [[tool.wood.verify.checks]]
 name = "monthly-consumer-contracts"
 argv = ["uv", "run", "--frozen", "python", "scripts/verify-consumers.py", "--monthly", "--configured-checkouts"]
 required = true
 timeout_seconds = 60
+
+[[tool.wood.verify.checks]]
+name = "events-service-schema"
+argv = ["uv", "run", "--frozen", "python", "scripts/verify-events.py"]
+required = true
+timeout_seconds = 30
 
 [tool.wood.architecture]
 domain = "engineering"

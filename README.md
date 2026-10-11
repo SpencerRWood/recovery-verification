@@ -4,6 +4,9 @@ Standalone Python/Dagster provider for a versioned recovery consumer contract.
 It validates declarations, runs daily prerequisite checks and orchestrates isolated
 weekly executable recovery verification.
 Consumers own bootstrap, provisioning, restore, rollback, and service validation.
+Retained daily, weekly and monthly reports feed a deterministic operator scorecard;
+see [readiness scorecards](docs/readiness-scorecard.md) for history, freshness,
+dependency precedence, JSON/human output and standardized event routing.
 
 ## Local development
 
@@ -31,7 +34,9 @@ provides the platform's fast infrastructure-only smoke check.
 check. Its UTC schedule is stopped by default until explicitly configured and
 enabled. `recovery_verification_weekly` selects the same daily asset/check and adds
 consumer-owned executable checks. See [weekly verification](docs/weekly-verification.md).
-Monthly drills and production orchestration remain separate work.
+`recovery_drill_monthly` adds isolated drills or explicitly unsupported weekly
+fallback. `recovery_scorecard` assesses retained evidence manually.
+Production orchestration remains OP-500 work.
 
 ## Structure and contracts
 
@@ -73,5 +78,6 @@ Semantic-release owns versions and tags.
 
 Quality gates are Ruff, Ruff formatting, strict mypy, pytest with branch coverage
 (minimum 90%), pre-commit, and Python package build. Wood retains validation logs
-and the source-bound record used during delivery. No `[tool.wood.verify]` contract
-is declared yet; production cadence and deployment acceptance belong to OP-500.
+and the source-bound record used during delivery. `wood repo verify --json` runs
+the declared monthly consumer-contract check with explicitly configured consumer
+checkouts; production cadence and deployment acceptance belong to OP-500.

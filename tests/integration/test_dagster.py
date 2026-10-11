@@ -39,6 +39,7 @@ def test_definitions_and_smoke() -> None:
         "recovery_readiness_daily",
         "recovery_verification_weekly",
         "recovery_drill_monthly",
+        "recovery_scorecard",
         "__ASSET_JOB",
     }
     assert defs.schedules

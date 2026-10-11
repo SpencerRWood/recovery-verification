@@ -4,6 +4,8 @@ import json
 import tomllib
 from pathlib import Path
 
+import yaml
+
 from recovery_verification.contract import Manifest
 
 ROOT = Path(__file__).parents[2]
@@ -27,5 +29,9 @@ def test_runtime_release_contract() -> None:
     assert "${DAGSTER_GRPC_PORT:?DAGSTER_GRPC_PORT is required}" in docker
     assert "USER app" in docker
     caller = (ROOT / ".github/workflows/release.yml").read_text()
-    assert "release-container.yml@v3" in caller
+    workflow = yaml.safe_load(caller)
+    release = workflow["jobs"]["release"]
+    assert "release-container.yml@" in release["uses"]
+    assert release["with"]["workflow_revision"] == release["uses"].split("@")[-1]
+    assert release["with"]["require_approval"] is True
     assert "packages: write" in caller

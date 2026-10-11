@@ -23,6 +23,10 @@ from dagster import (
 from pydantic import Field
 
 from recovery_verification.contract import parse_manifest
+from recovery_verification.dagster.scorecard import (
+    recovery_readiness_scorecard,
+    recovery_scorecard,
+)
 from recovery_verification.monthly import MonthlyReport, extend_monthly
 from recovery_verification.preflight import preflight
 from recovery_verification.probes import BoundedProbe
@@ -174,7 +178,12 @@ def recovery_readiness_daily_schedule() -> RunRequest | SkipReason:
 
 
 daily_definitions = Definitions(
-    assets=[recovery_readiness, recovery_verification, recovery_drill],
+    assets=[
+        recovery_readiness,
+        recovery_verification,
+        recovery_drill,
+        recovery_readiness_scorecard,
+    ],
     asset_checks=[
         prerequisites_ready,
         recovery_paths_verified,
@@ -184,6 +193,7 @@ daily_definitions = Definitions(
         recovery_readiness_daily,
         recovery_verification_weekly,
         recovery_drill_monthly,
+        recovery_scorecard,
     ],
     schedules=[recovery_readiness_daily_schedule],
     resources={"io_manager": mem_io_manager},

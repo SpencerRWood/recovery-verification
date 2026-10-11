@@ -1,12 +1,22 @@
 name: Release
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_approved:
+        description: 'Confirm the reviewed release scope and main revision are approved for publication'
+        type: boolean
+        required: true
+        default: false
 
 jobs:
   release:
-    uses: SpencerRWood/workflows/.github/workflows/release-container.yml@v3
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.release_approved == true
+    uses: SpencerRWood/workflows/.github/workflows/release-container.yml@9307f9b80141f4ed9c463af360a1b13a49ca3353
+    with:
+      require_approval: true
+      workflow_revision: 9307f9b80141f4ed9c463af360a1b13a49ca3353
+      approved: ${{ inputs.release_approved }}
     permissions:
       contents: write
       packages: write

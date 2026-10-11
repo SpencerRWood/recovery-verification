@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from recovery_verification.contract import parse_manifest
@@ -20,6 +21,14 @@ from recovery_verification.invocation import (
     invoke_readiness,
     invoke_verification,
 )
+from recovery_verification.readiness import (
+    Observation,
+    ReadinessCheck,
+    readiness_state,
+    run_readiness,
+)
+from recovery_verification.scorecard import History, build_scorecard, capture_evidence
+from recovery_verification.weekly import WeeklyReport
 
 
 def git(root: Path, *args: str) -> str:
@@ -34,7 +43,7 @@ def git(root: Path, *args: str) -> str:
     return result.stdout
 
 
-def verify(
+def verify(  # noqa: PLR0912, PLR0915 -- Explicit local consumer and provenance acceptance gates.
     source: Path, snapshot: Path, *, weekly: bool = False, monthly: bool = False
 ) -> dict[str, object]:
     names = git(source, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
@@ -85,6 +94,76 @@ def verify(
             for command in target.validation_commands
             if monthly and "drill" in command.levels
         ]
+        scorecard = None
+        if (
+            result.provenance is None
+            or not result.provenance.playbooks
+            or not result.provenance.inventories
+        ):
+            raise ValueError("consumer_preflight_provenance_required")
+        if verification:
+            if (
+                verification.provenance is None
+                or not verification.provenance.playbooks
+                or verification.provenance.inline_inventory != "localhost"
+            ):
+                raise ValueError("consumer_weekly_provenance_required")
+            if not any(
+                b.kind == "representative_fixture" and b.artifact_sha256
+                for b in verification.provenance.backups
+            ):
+                raise ValueError("consumer_restore_provenance_required")
+            # External runtime prerequisites are explicitly unavailable in this
+            # local contract check; no production readiness is manufactured.
+            daily = run_readiness(
+                manifest,
+                {target.id: snapshot},
+                lambda *_: Observation(
+                    state="unavailable",
+                    reason="local_contract_scope",
+                    category="verification_infrastructure",
+                ),
+            )
+            if any(check.state == "failed" for check in daily.checks):
+                raise ValueError("consumer_native_readiness_failed")
+            check = ReadinessCheck(
+                target_id=target.id,
+                check_id="weekly_consumer_weekly",
+                tested_revision=target.revision,
+                timestamp=datetime.now(UTC),
+                duration_seconds=0,
+                state=verification.readiness_state,
+                reason="consumer_executable_verification",
+                provenance=verification.provenance,
+            )
+            checks = (*daily.checks, check)
+            report = WeeklyReport(
+                **daily.model_dump(exclude={"checks", "timestamp", "readiness"}),
+                timestamp=datetime.now(UTC),
+                checks=checks,
+                readiness=readiness_state(checks),
+                consumer_evidence={f"{target.id}/consumer_weekly": verification},
+            )
+            scorecard = build_scorecard(
+                manifest,
+                History(
+                    entries=(
+                        capture_evidence(
+                            manifest, "verification", report.model_dump_json()
+                        ),
+                    )
+                ),
+                now=datetime.now(UTC),
+            )
+            latest = scorecard.targets[0].tiers[1].latest_attempt
+            if (
+                latest is None
+                or latest.provenance
+                != verification.provenance.model_copy(
+                    update={"backups": latest.provenance.backups}
+                )
+            ):
+                raise ValueError("consumer_scorecard_provenance_mismatch")
     finally:
         os.environ["PATH"] = previous_path
     local = [check for check in result.checks if check.id != "external_prerequisites"]
@@ -109,6 +188,8 @@ def verify(
         if weekly or monthly
         else "local_configuration_only",
         "weekly": verification.model_dump(mode="json") if verification else None,
+        "preflight_provenance": result.provenance.model_dump(mode="json"),
+        "scorecard": scorecard.model_dump(mode="json") if scorecard else None,
         "ephemeral_rebuild": target.ephemeral_rebuild.model_dump() if monthly else None,
         "drills": [drill.model_dump(mode="json") for drill in drills],
     }
@@ -149,7 +230,7 @@ def main() -> int:
             prefix="recovery-consumer-fixtures-"
         ) as directory:
             for index, source in enumerate(args.checkout):
-                snapshot = Path(directory) / str(index)
+                snapshot = Path(directory).resolve() / str(index)
                 snapshot.mkdir()
                 results.append(
                     verify(
