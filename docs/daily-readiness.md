@@ -84,9 +84,7 @@ to OP-499.
 structured report in metadata. UNKNOWN and NOT_READY fail the check while still
 preserving observations; successful asset execution alone does not imply READY.
 
-The schedule runs at 06:00 UTC and is stopped by default. Set
-`RECOVERY_READINESS_CONFIG` to a non-secret JSON file containing `manifest_json`,
-`checkouts` (target-to-path map), and optional `target_ids`/`check_ids`. Missing or
-invalid configuration skips the tick. Do not put secret values in Dagster config:
-Dagster persists it. Production registration, schedule activation and restart-safe
-orchestration are handled in OP-500.
+OP-500 supplies the stopped-by-default, configurable America/New_York schedules
+through `RECOVERY_ORCHESTRATION_CONFIG`; see [operations](operationalization.md).
+There is one explicit configuration interface. Do not put secret values in
+Dagster config: Dagster persists it. Schedule activation requires separate approval.

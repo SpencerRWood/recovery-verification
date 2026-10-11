@@ -30,6 +30,11 @@ dependencies = [
 
 [project.scripts]
 recovery-verification = "recovery_verification.cli:main"
+recovery-verification-health = "recovery_verification.health:main"
+recovery-verification-run = "recovery_verification.manual:main"
+
+[project.optional-dependencies]
+execution = ["ansible==14.4.0"]
 
 [dependency-groups]
 dev = [
@@ -169,6 +174,12 @@ scope_reference = "docs/releases/v0.6.0.md: user approval 2026-10-11, Decisions 
 [tool.wood.verify]
 version = 1
 retry_safe = true
+
+[[tool.wood.verify.checks]]
+name = "orchestration-registration"
+argv = ["uv", "run", "--frozen", "recovery-verification-health"]
+required = true
+timeout_seconds = 30
 
 [[tool.wood.verify.checks]]
 name = "workflow-publication-safety"
