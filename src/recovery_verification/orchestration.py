@@ -2,8 +2,9 @@
 
 import json
 import os
+import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 from dagster import RunRequest
@@ -162,45 +163,82 @@ def execution_request(
     )
 
 
-def proportional_tier(
-    paths: tuple[str, ...], *, isolated_test_mode: bool
-) -> Level | None:
-    """Conservative path classification; no consumer-specific branches."""
-    lowered = tuple(p.lower() for p in paths)
-    relevant = tuple(
-        p
-        for p in lowered
-        if any(
-            part in p
-            for part in (
-                "ansible/",
-                "inventory",
-                "inventories",
-                "bootstrap",
-                "recovery",
-                "backup",
-                "restore",
-                "mount",
-                "secret",
-            )
-        )
-    )
-    if not relevant:
-        return None
-    if any("bootstrap" in p for p in relevant) and isolated_test_mode:
+# Configuration formats are dependency inputs regardless of consumer or filename.
+CONFIG_SUFFIXES = frozenset(
+    {".yml", ".yaml", ".json", ".toml", ".ini", ".cfg", ".conf", ".env"}
+)
+IMPLEMENTATION_PARTS = frozenset({"roles", "playbook", "playbooks"})
+RECOVERY_PARTS = frozenset({"bootstrap", "recovery", "backup", "restore"})
+DEPENDENCY_PARTS = frozenset(
+    {
+        "ansible",
+        "inventory",
+        "inventories",
+        "compose",
+        "docker",
+        "environment",
+        "environments",
+        "config",
+        "configuration",
+        "mount",
+        "mounts",
+        "secret",
+        "secrets",
+    }
+)
+PASSIVE_SUFFIXES = frozenset({".md", ".rst", ".txt", ".png", ".jpg", ".svg"})
+
+
+def _path_tier(path: str, *, isolated_test_mode: bool) -> Level | None:
+    # Reject malformed/ambiguous diff inputs instead of consuming their revision.
+    parts = path.split("/")
+    if not path or any(p in {"", ".", ".."} for p in parts) or "\0" in path:
+        raise ValueError("invalid_change_path")
+    name = PurePosixPath(path.lower())
+    tokens = frozenset(re.split(r"[/_.-]+", path.lower()))
+    if "bootstrap" in tokens and isolated_test_mode:
         return "drill"
-    if any(
-        part in p
-        for p in relevant
-        for part in ("roles/", "playbook", "bootstrap", "recovery", "backup", "restore")
-    ):
+    if "bootstrap" in tokens or tokens & IMPLEMENTATION_PARTS:
         return "verification"
+    if name.suffix in CONFIG_SUFFIXES or "env" in tokens or name.name == "dockerfile":
+        return "readiness"
+    if tokens & RECOVERY_PARTS:
+        return "verification"
+    # Only positively identified passive files may be ignored. Unknown formats
+    # conservatively request readiness; no content/secret inspection is needed.
+    if name.suffix in PASSIVE_SUFFIXES and not tokens & DEPENDENCY_PARTS:
+        return None
     return "readiness"
 
 
+def proportional_tier(
+    paths: tuple[str, ...], *, isolated_test_mode: bool
+) -> Level | None:
+    """Select the strongest generic path tier; classify every path before return."""
+    tiers = {_path_tier(p, isolated_test_mode=isolated_test_mode) for p in paths}
+    return next(
+        (tier for tier in ("drill", "verification", "readiness") if tier in tiers), None
+    )
+
+
 def changed_paths(root: Path, previous: str, current: str) -> tuple[str, ...]:
+    if not all(
+        re.fullmatch(r"[0-9a-f]{40}", revision) for revision in (previous, current)
+    ):
+        raise ValueError("invalid_change_revision")
     result = subprocess.run(  # noqa: S603 -- Git argument vector; revisions are schema-validated by callers.
-        ["git", "diff", "--name-only", "-z", previous, current, "--"],  # noqa: S607
+        [  # noqa: S607 -- The operator's Git is required; diff helpers are disabled.
+            "git",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            previous,
+            current,
+            "--",
+        ],
         cwd=root,
         capture_output=True,
         timeout=10,
@@ -208,7 +246,12 @@ def changed_paths(root: Path, previous: str, current: str) -> tuple[str, ...]:
     )
     if len(result.stdout) > 65536:
         raise ValueError("change_path_limit")
-    return tuple(p for p in result.stdout.decode().split("\0") if p)
+    if result.stdout and not result.stdout.endswith(b"\0"):
+        raise ValueError("invalid_change_diff")
+    paths = tuple(result.stdout.decode().split("\0")[:-1])
+    if any(not p for p in paths):
+        raise ValueError("invalid_change_diff")
+    return paths
 
 
 def revision_cursor(raw: str | None) -> dict[str, str]:

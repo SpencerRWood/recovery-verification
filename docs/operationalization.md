@@ -63,11 +63,16 @@ checkout concurrently; use these locked operational jobs for attended execution.
 The stopped `recovery_relevant_changes` sensor polls configured clean checkout
 revisions every 60 seconds. The first tick establishes a baseline, subsequent
 ticks diff exact commits and emit deterministic run keys for affected targets.
-Inventories, mounts and secret references select readiness. Roles, playbooks,
-backup/restore configuration, recovery entrypoints and manifests select weekly
-verification. Bootstrap changes select monthly only when `isolated_test_mode`
-is explicitly true; otherwise they remain weekly. Other changes do not trigger
-verification. Failed export/diff leaves the cursor unchanged for the next tick.
+Configuration formats (YAML, JSON, TOML, INI, CFG, CONF and ENV), Dockerfiles,
+inventories, Compose, environment selections, mounts and secret references select
+readiness, including backup paths and recovery manifests. Roles, playbooks and
+recovery/backup/restore implementation entrypoints select weekly verification.
+Bootstrap changes select monthly only when `isolated_test_mode` is explicitly
+true; otherwise they remain weekly. Rules use generic path components and formats,
+independent of consumer identity. Only passive documentation/media outside these
+surfaces is ignored; unknown formats conservatively select readiness. The strongest
+tier wins across all changed paths. Renames include both old and new paths.
+Failed classification, export or diff leaves the cursor unchanged for the next tick.
 Dagster's durable cursor and run-key suppression prevent replayed change ticks.
 
 The deployment operator must supply and advance the clean, consumer-owned source

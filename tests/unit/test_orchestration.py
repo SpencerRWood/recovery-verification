@@ -136,9 +136,9 @@ def test_invalid_configuration_fails_closed(
         ("secret-references.json", "readiness"),
         ("ansible/roles/host/tasks/main.yml", "verification"),
         ("ansible/playbooks/dev.yml", "verification"),
-        ("backup/config.yml", "verification"),
+        ("backup/config.yml", "readiness"),
         ("scripts/restore.py", "verification"),
-        ("recovery/consumer.v1.json", "verification"),
+        ("recovery/consumer.v1.json", "readiness"),
         ("scripts/bootstrap.py", "verification"),
     ],
 )
@@ -147,6 +147,142 @@ def test_proportional_changes(path: str, expected: str | None) -> None:
     assert (
         proportional_tier(("scripts/bootstrap.py",), isolated_test_mode=True) == "drill"
     )
+
+
+@pytest.mark.parametrize(
+    "path", ["compose/dagster/compose.yml", "environments/dev.yml"]
+)
+def test_f1_configuration_sensor_regression(
+    path: str, config: OrchestrationConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "recovery_verification.dagster.triggers.load_config", lambda: config
+    )
+    monkeypatch.setattr(
+        "recovery_verification.dagster.triggers.changed_paths", lambda *_: (path,)
+    )
+    context = build_sensor_context(cursor=json.dumps({"example-linux": "b" * 40}))
+    result = recovery_relevant_changes(context)
+    assert isinstance(result, SensorResult)
+    assert result.run_requests
+    assert result.run_requests[0].job_name == "recovery_readiness_daily"
+    assert result.cursor != context.cursor
+
+
+@pytest.mark.parametrize(
+    ("paths", "isolated", "tier"),
+    [
+        (("config/backup-paths.yml",), False, "readiness"),
+        (("volumes.conf",), False, "readiness"),
+        (("credentials.json",), False, "readiness"),
+        ((".env",), False, "readiness"),
+        (("Dockerfile",), False, "readiness"),
+        (("settings/custom.format",), False, "readiness"),
+        (("scripts/recovery_verify.py",), False, "verification"),
+        (("scripts/bootstrap.py",), False, "verification"),
+        (("ansible/bootstrap.yml",), False, "verification"),
+        (("scripts/bootstrap.py",), True, "drill"),
+        (("README.md", "docs/guide.txt"), True, None),
+        (("compose/compose.yaml", "scripts/restore.py"), False, "verification"),
+        (("scripts/restore.py", "scripts/bootstrap.py"), True, "drill"),
+    ],
+)
+def test_sensor_classification_requests_and_duplicate_suppression(
+    paths: tuple[str, ...],
+    isolated: bool,
+    tier: Level | None,
+    config: OrchestrationConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = config.model_copy(update={"isolated_test_mode": isolated})
+    monkeypatch.setattr(
+        "recovery_verification.dagster.triggers.load_config", lambda: config
+    )
+    diff = Mock(return_value=paths)
+    monkeypatch.setattr("recovery_verification.dagster.triggers.changed_paths", diff)
+    old = "b" * 40
+    revision = parse_manifest(config.manifest_json).targets[0].revision
+    context = build_sensor_context(cursor=json.dumps({"example-linux": old}))
+    result = recovery_relevant_changes(context)
+    replay = recovery_relevant_changes(context)
+    assert isinstance(result, SensorResult)
+    assert isinstance(replay, SensorResult)
+    assert result.run_requests == replay.run_requests
+    assert result.cursor == json.dumps({"example-linux": revision}, sort_keys=True)
+    assert len(result.run_requests or []) == (1 if tier else 0)
+    if tier:
+        assert result.run_requests
+        request = result.run_requests[0]
+        assert request.run_key == f"change:test:example-linux:{old}:{revision}:{tier}"
+        assert request.job_name == orchestration.JOBS[tier]
+        for asset in request.run_config["ops"].values():
+            assert asset["config"]["target_ids"] == ["example-linux"]
+            bound = parse_manifest(asset["config"]["manifest_json"])
+            assert bound.targets[0].revision == revision
+    diff.reset_mock()
+    consumed = recovery_relevant_changes(build_sensor_context(cursor=result.cursor))
+    assert isinstance(consumed, SensorResult)
+    assert not consumed.run_requests
+    diff.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("operation", "error"),
+    [
+        ("proportional_tier", ValueError("classification_failed")),
+        ("changed_paths", subprocess.CalledProcessError(1, ["git", "diff"])),
+        ("changed_paths", subprocess.TimeoutExpired(["git", "diff"], 10)),
+        ("changed_paths", UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")),
+        ("current_manifest", ValueError("export_failed")),
+        ("current_manifest", OSError("export_unavailable")),
+    ],
+)
+def test_sensor_failures_retain_cursor(
+    operation: str,
+    error: Exception,
+    config: OrchestrationConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "recovery_verification.dagster.triggers.load_config", lambda: config
+    )
+    monkeypatch.setattr(
+        "recovery_verification.dagster.triggers.changed_paths",
+        Mock(return_value=("compose/dagster/compose.yml",)),
+    )
+    monkeypatch.setattr(
+        f"recovery_verification.dagster.triggers.{operation}", Mock(side_effect=error)
+    )
+    context = build_sensor_context(cursor=json.dumps({"example-linux": "b" * 40}))
+    result = recovery_relevant_changes.evaluate_tick(context)
+    assert not result.run_requests
+    assert result.skip_message == "recovery_change_detection_unavailable"
+    assert result.cursor == context.cursor
+
+
+@pytest.mark.parametrize(
+    "path", ["", "../config.yml", "/config.yml", "a//b", "a/./b", "a\0b"]
+)
+def test_ambiguous_classification_fails_closed(path: str) -> None:
+    with pytest.raises(ValueError, match="invalid_change_path"):
+        proportional_tier(("scripts/bootstrap.py", path), isolated_test_mode=True)
+
+
+@pytest.mark.parametrize("output", [b"unterminated", b"a\0\0", b"\xff\0"])
+def test_malformed_git_diff_fails_closed(
+    output: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "recovery_verification.orchestration.subprocess.run",
+        Mock(return_value=subprocess.CompletedProcess([], 0, stdout=output)),
+    )
+    with pytest.raises(ValueError, match=r"invalid_change_diff|decode"):
+        changed_paths(tmp_path, "a" * 40, "b" * 40)
+
+
+def test_invalid_git_revision_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="invalid_change_revision"):
+        changed_paths(tmp_path, "--unsafe", "b" * 40)
 
 
 def test_requests_bind_target_and_revision(config: OrchestrationConfig) -> None:
