@@ -21,6 +21,7 @@ from recovery_verification.invocation import (
     invoke_readiness,
     invoke_verification,
 )
+from recovery_verification.monthly import extend_monthly
 from recovery_verification.readiness import (
     Observation,
     ReadinessCheck,
@@ -95,6 +96,7 @@ def verify(  # noqa: PLR0912, PLR0915 -- Explicit local consumer and provenance 
             if monthly and "drill" in command.levels
         ]
         scorecard = None
+        monthly_report = None
         if (
             result.provenance is None
             or not result.provenance.playbooks
@@ -144,12 +146,20 @@ def verify(  # noqa: PLR0912, PLR0915 -- Explicit local consumer and provenance 
                 readiness=readiness_state(checks),
                 consumer_evidence={f"{target.id}/consumer_weekly": verification},
             )
+            if monthly:
+                monthly_report = extend_monthly(
+                    manifest, {target.id: snapshot}, daily, target_ids=(target.id,)
+                )
             scorecard = build_scorecard(
                 manifest,
                 History(
                     entries=(
                         capture_evidence(
-                            manifest, "verification", report.model_dump_json()
+                            manifest,
+                            "drill" if monthly_report else "verification",
+                            monthly_report.model_dump_json()
+                            if monthly_report
+                            else report.model_dump_json(),
                         ),
                     )
                 ),
@@ -190,6 +200,7 @@ def verify(  # noqa: PLR0912, PLR0915 -- Explicit local consumer and provenance 
         "weekly": verification.model_dump(mode="json") if verification else None,
         "preflight_provenance": result.provenance.model_dump(mode="json"),
         "scorecard": scorecard.model_dump(mode="json") if scorecard else None,
+        "monthly": monthly_report.model_dump(mode="json") if monthly_report else None,
         "ephemeral_rebuild": target.ephemeral_rebuild.model_dump() if monthly else None,
         "drills": [drill.model_dump(mode="json") for drill in drills],
     }
