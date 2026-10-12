@@ -190,6 +190,7 @@ def extend_monthly(
         manifest_sha256=daily.manifest_sha256,
         timestamp=datetime.now(UTC),
         target_revisions=daily.target_revisions,
+        provenance=daily.provenance,
         checks=observations,
         readiness="UNKNOWN" if superseded else readiness_state(observations),
         currency="superseded" if superseded else "current",

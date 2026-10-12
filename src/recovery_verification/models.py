@@ -6,6 +6,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, model_validator
 
 from recovery_verification.contract import ContractModel, Identifier, Reference
+from recovery_verification.provenance import ExecutionProvenance
 
 State = Literal["passed", "failed", "unavailable", "skipped", "not_applicable"]
 
@@ -61,6 +62,7 @@ class ConsumerResult(ContractModel):
     mode: Literal["preflight"]
     readiness_state: State
     checks: Annotated[tuple[ConsumerCheck, ...], Field(min_length=1, max_length=128)]
+    provenance: ExecutionProvenance | None = None
 
     @model_validator(mode="after")
     def consistent_state(self) -> Self:
@@ -100,9 +102,21 @@ class ConsumerVerificationResult(ContractModel):
     checks: Annotated[
         tuple[VerificationCheck, ...], Field(min_length=1, max_length=128)
     ]
+    provenance: ExecutionProvenance | None = None
 
     @model_validator(mode="after")
     def consistent_state(self) -> Self:
+        if self.provenance and any(
+            backup.artifact_sha256 is not None
+            and backup.artifact_sha256
+            not in {
+                check.artifact_sha256
+                for check in self.checks
+                if check.phase == "restore"
+            }
+            for backup in self.provenance.backups
+        ):
+            raise ValueError("unbound_backup_provenance")
         required = {
             "automation_check",
             "automation_idempotence",

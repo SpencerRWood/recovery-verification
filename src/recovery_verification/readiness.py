@@ -15,6 +15,7 @@ from pydantic import Field, model_validator
 from recovery_verification.contract import ContractModel, Identifier, Manifest, Target
 from recovery_verification.invocation import InvocationError, _git, invoke_readiness
 from recovery_verification.models import State
+from recovery_verification.provenance import ExecutionProvenance
 
 Category = Literal["none", "recovery_prerequisite", "verification_infrastructure"]
 
@@ -23,6 +24,7 @@ class Observation(ContractModel):
     state: State
     reason: Identifier
     category: Category = "none"
+    provenance: ExecutionProvenance | None = None
 
 
 class ReadinessCheck(Observation):
@@ -41,6 +43,7 @@ class ReadinessReport(ContractModel):
     target_revisions: dict[str, str]
     readiness: Literal["READY", "NOT_READY", "UNKNOWN"]
     currency: Literal["current", "stale", "superseded"] = "current"
+    provenance: dict[Identifier, ExecutionProvenance] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def consistent_evidence(self) -> ReadinessReport:
@@ -53,6 +56,19 @@ class ReadinessReport(ContractModel):
             for item in self.checks
         ):
             raise ValueError("invalid evidence revision")
+        if set(self.provenance) - set(self.target_revisions) or any(
+            backup.timestamp is not None and backup.timestamp > self.timestamp
+            for evidence in self.provenance.values()
+            for backup in evidence.backups
+        ):
+            raise ValueError("invalid evidence provenance")
+        if any(
+            backup.timestamp is not None and backup.timestamp > check.timestamp
+            for check in self.checks
+            if check.provenance
+            for backup in check.provenance.backups
+        ):
+            raise ValueError("invalid check provenance timestamp")
         expected = (
             readiness_state(self.checks) if self.currency == "current" else "UNKNOWN"
         )
@@ -161,6 +177,7 @@ def _consumer(target: Target, root: Path, check_id: str) -> Observation:
     return Observation(
         state=state,
         reason="consumer_local_checks",
+        provenance=result.provenance,
         category="recovery_prerequisite"
         if state == "failed"
         else "verification_infrastructure"

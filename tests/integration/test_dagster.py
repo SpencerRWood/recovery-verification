@@ -1,11 +1,12 @@
 """Real Dagster Definitions load and local execution through the generic boundary."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
-from dagster import Definitions, RunRequest, SkipReason
+from dagster import Definitions, RunRequest, build_schedule_context
 from dagster._core.workspace.autodiscovery import loadable_targets_from_python_module
 from tests.unit.test_monthly import Provider, unsupported
 from tests.unit.test_weekly import consumer
@@ -16,7 +17,6 @@ from recovery_verification.dagster.definitions import defs
 from recovery_verification.dagster.jobs import (
     PreflightConfig,
     contract_preflight,
-    recovery_readiness_daily_schedule,
 )
 from recovery_verification.drill import execute_drill
 from recovery_verification.probes import BoundedProbe, result
@@ -39,10 +39,11 @@ def test_definitions_and_smoke() -> None:
         "recovery_readiness_daily",
         "recovery_verification_weekly",
         "recovery_drill_monthly",
+        "recovery_scorecard",
         "__ASSET_JOB",
     }
     assert defs.schedules
-    assert not defs.sensors
+    assert defs.sensors
     result = defs.get_job_def("runtime_smoke_job").execute_in_process()
     assert result.success
     assert result.output_for_node("runtime_smoke") == "ok"
@@ -130,18 +131,31 @@ def test_daily_job_uses_shared_checks(
 def test_daily_schedule_explicit_configuration(
     document: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("RECOVERY_READINESS_CONFIG", raising=False)
-    assert isinstance(recovery_readiness_daily_schedule(), SkipReason)
+    schedule = defs.get_schedule_def("recovery_readiness_daily_schedule")
+    context = build_schedule_context(scheduled_execution_time=datetime.now(UTC))
+    monkeypatch.delenv("RECOVERY_ORCHESTRATION_CONFIG", raising=False)
+    assert schedule.evaluate_tick(context).skip_message
     source = tmp_path / "daily.json"
-    monkeypatch.setenv("RECOVERY_READINESS_CONFIG", str(source))
-    assert isinstance(recovery_readiness_daily_schedule(), SkipReason)
-    source.write_text(json.dumps({"manifest_json": json.dumps(document)}))
-    request = recovery_readiness_daily_schedule()
+    monkeypatch.setenv("RECOVERY_ORCHESTRATION_CONFIG", str(source))
+    assert schedule.evaluate_tick(context).skip_message
+    source.write_text(
+        json.dumps(
+            {
+                "manifest_json": json.dumps(document),
+                "checkouts": {"example-linux": str(tmp_path)},
+                "state_directory": str(tmp_path / "state"),
+                "environment": "test",
+            }
+        )
+    )
+    requests = schedule.evaluate_tick(context).run_requests
+    assert requests
+    request = requests[0]
     assert isinstance(request, RunRequest)
     assert request.run_config["ops"]["recovery_readiness"]["config"]["manifest_json"]
     source.write_text('{"manifest_json":"invalid"}')
-    assert isinstance(recovery_readiness_daily_schedule(), SkipReason)
-    assert recovery_readiness_daily_schedule.execution_timezone == "UTC"
+    assert schedule.evaluate_tick(context).skip_message
+    assert schedule.execution_timezone == "America/New_York"
 
 
 @pytest.mark.parametrize("state", ["passed", "failed", "unavailable"])
