@@ -1,6 +1,7 @@
 """Published schema and platform runtime wiring remain aligned with provider code."""
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -33,5 +34,21 @@ def test_runtime_release_contract() -> None:
     release = workflow["jobs"]["release"]
     assert "release-container.yml@" in release["uses"]
     assert release["with"]["workflow_revision"] == release["uses"].split("@")[-1]
+    assert re.fullmatch(r"[0-9a-f]{40}", release["with"]["workflow_revision"])
     assert release["with"]["require_approval"] is True
     assert "packages: write" in caller
+    inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
+    assert inputs["approved_revision"]["type"] == "string"
+    assert inputs["approved_revision"]["required"] is True
+    assert not inputs["approved_revision"].get("default")
+    assert inputs["recovery_approved"]["type"] == "boolean"
+    assert inputs["recovery_approved"]["required"] is True
+    assert inputs["recovery_approved"]["default"] is False
+    assert release["with"]["approved_revision"] == "${{ inputs.approved_revision }}"
+    assert release["with"]["recovery_approved"] == "${{ inputs.recovery_approved }}"
+    assert release["permissions"] == {
+        "contents": "write",
+        "packages": "write",
+        "id-token": "write",
+        "attestations": "write",
+    }

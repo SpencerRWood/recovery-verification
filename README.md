@@ -71,10 +71,25 @@ The code location has no hardcoded physical host, network, or service address.
 
 Dagster 1.13.24, dagster-postgres 0.29.24, SQLAlchemy 2.0.54, and
 psycopg2-binary 2.9.13 form the pinned platform runtime family. Review their
-updates together. Validation consumes `SpencerRWood/workflows` at `v3`; release
-consumes its integrated `release-container.yml@v3`. The Dagster contract enables
+updates together. Validation and release consume immutable revisions of
+`SpencerRWood/workflows`, with each caller's helper pin matching its workflow pin.
+Release uses the approved publication safeguards integrated in Workflows PR #38.
+The Dagster contract enables
 exact-candidate PostgreSQL/gRPC smoke validation before release publication.
 Semantic-release owns versions and tags.
+
+Publication requires a separately approved manual dispatch on main with
+`release_approved: true`, the exact reviewed current main SHA in
+`approved_revision`, and an explicit `recovery_approved` choice (default false).
+Recovery authorization covers only the separately reviewed candidate reuse or
+partial publication steps; a rerun does not grant it. The shared workflow verifies
+source, signed prepared-input identity, platform, package version and registry
+digest before promotion and finalization. Retain the reviewed sole main/GHCR
+writer controls throughout publication, as described in the
+[shared publication runbook](https://github.com/SpencerRWood/workflows/blob/74b31b0d4f9f39dfe6a3a0f3c1bbeffca8bfaee4/docs/publication-safeguards.md).
+A caller update requires fresh exact-source review and nonpublishing version
+verification; the planned v0.6.0 is not publication approval. CI, caller merges and
+publication never authorize deployment or schedule/sensor activation.
 
 Quality gates are Ruff, Ruff formatting, strict mypy, pytest with branch coverage
 (minimum 90%), pre-commit, and Python package build. Wood retains validation logs
