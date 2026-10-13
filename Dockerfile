@@ -10,10 +10,11 @@ RUN uv sync --frozen --no-dev --extra execution --no-editable --no-install-proje
 
 FROM python:3.14-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ca-certificates postgresql-17 && rm -rf /var/lib/apt/lists/*
+    git ca-certificates postgresql-17 locales-all tzdata age && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 app
 WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:/usr/lib/postgresql/17/bin:$PATH"
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC
 USER app
 CMD ["sh", "-c", "exec dagster api grpc -m recovery_verification.dagster.definitions -h 0.0.0.0 -p \"${DAGSTER_GRPC_PORT:?DAGSTER_GRPC_PORT is required}\""]

@@ -1,7 +1,7 @@
 # Repository guidance
 
 This application adopts release-branch integration for the explicitly approved
-R1 scope in [docs/releases/v0.6.0.md](docs/releases/v0.6.0.md). OP-499's existing
+R1 patch scope in [docs/releases/v0.6.1.md](docs/releases/v0.6.1.md). OP-499's existing
 branch, worktree and durable claim are retained under that recorded exception;
 its PR must target release/v0.6.0. Do not reset or migrate the existing claim.
 
