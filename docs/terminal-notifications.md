@@ -44,8 +44,39 @@ independent interface; do not invoke its `--notify` option as a second notifier
 for Dagster runs. Historical execution journal notification fields are historical
 records, not the authority for the new terminal outbox.
 
-Wood Events renders `recovery.run-completed` as one Backup & Recovery Scorecard
-message and routes it through a source/event-specific Telegram policy. Recovery
+Wood Events renders `recovery.run-completed` as an editorial Backup & Recovery
+report and routes it through the existing source/event-specific Telegram policy.
+The initial summary distinguishes execution, backup prerequisite evidence,
+integrity, freshness, tier results and recovery readiness. Backup availability
+does not prove producer execution; absent producer outcome evidence is reported
+as execution unverified. Weekly integrity must bind real tested artifact digests
+to the latest backup provenance. Fixture evidence cannot attest to production
+recovery. Tier evidence includes dates; a digest-verified execution journal is
+required to call evidence current to this run. Missing run binding is labeled
+historical, including for failed/canceled runs. The evidence link always points
+to this terminal run. Execution summaries are sanitized classifications, never
+exception traces.
+
+`notification_presentation.py` owns diagnostic descriptions and actionable
+findings. Failed, skipped and unavailable checks remain distinct; passed and
+not-applicable catalog diagnostics are informational. Unknown diagnostics retain
+safe English labels and exact references in event findings and linked evidence.
+Findings merge only by diagnostic identity, with both environment labels retained;
+the unsupported-bootstrap reason is one underlying capability issue even when
+represented by both a tier status and a check. OP-543 is a separate outstanding
+custody requirement, not a scorecard evaluation override.
+
+Structured `report_blocks` are additive event data; existing event identities,
+outbox receipts, cutoffs and replay behavior are unchanged. Wood Notify freezes
+HTML/plain parts at acceptance. Reports fitting Telegram's 4096-character limit
+are single messages; longer reports retain every finding, continue category
+headings in each part, and place the single evidence link last. UTF-16 counting
+also bounds the plain fallback. Only an individually oversized finding splits.
+Synthetic formatting uses `terminal_event(..., synthetic=True)`: TEST heading,
+explicit simulated evidence, informational severity and separate event identity.
+It never writes scorecard history or emits incident-resolution events.
+
+Recovery
 Telegram sends commit a dispatch intent before contacting Telegram. A crash or
 ambiguous response cannot automatically resend the same message; it is visible
 as dispatching or delivery-uncertain and requires operator reconciliation.
@@ -53,6 +84,18 @@ Telegram supplies no send idempotency key, so guaranteed delivery and guaranteed
 absence of duplicates cannot both be claimed after an uncertain remote result.
 A known HTTP429 rejection can retry; ordinary unrelated notifications retain
 their existing policy.
+
+Multipart dispatch uses `notify_recovery_parts` (Events migration 0005): stable
+part IDs and ordered positions under the original logical request, immutable
+payloads, independent attempts and confirmed Telegram message IDs. Confirmed
+parts never resend on retry/restart. A failed or uncertain part stops later
+parts; the scoped notification detail endpoint exposes every part's state.
+Known rejection retries are bounded per part. A definite HTML HTTP400 rejection
+can fall back to escaped plain text; uncertain acceptance never triggers that
+fallback. Pending/uncertain multipart state pins its retention evidence.
+Reconcile dispatching/delivery-uncertain with Telegram before any reviewed state
+repair; there is no automatic exactly-once claim. Ordinary safe retry resumes
+only failed parts. Deploy Events compatibility/migration before the producer.
 
 After exact artifact deployment and source credential/routing validation,
 enable this notification sensor first through Dagster's supported controls,
