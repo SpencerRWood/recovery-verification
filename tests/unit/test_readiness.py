@@ -402,16 +402,21 @@ def test_secret_metadata_present_missing_and_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("RECOVERY_INFISICAL_URL", "https://vault.example.test")
-    monkeypatch.setenv("RECOVERY_INFISICAL_TOKEN", "never-log-token")
+    monkeypatch.setenv("RECOVERY_INFISICAL_CLIENT_ID", "fixture-client")
+    monkeypatch.setenv("RECOVERY_INFISICAL_CLIENT_SECRET", "fixture-secret")
+    monkeypatch.setattr(probes, "metadata_token", lambda *_: "never-log-token")
     reference = "infisical://" + "1" * 8 + "-1111-1111-1111-111111111111/dev/app/KEY"
 
     def metadata(url: str, *, token: str = "", head: bool = False) -> bytes:
         query = parse_qs(urlsplit(url).query)
         assert query["viewSecretValue"] == ["false"]
         assert query["expandSecretReferences"] == ["false"]
+        assert query["includeImports"] == ["false"]
+        assert query["type"] == ["shared"]
+        assert urlsplit(url).path == "/api/v4/secrets/KEY"
         assert token == "never-log-token"  # noqa: S105 -- Synthetic credential exclusion fixture.
         assert not head
-        return b'{"secrets":[{"secretKey":"KEY","secretValue":""}]}'
+        return b'{"secret":{"secretKey":"KEY","secretValue":""}}'
 
     monkeypatch.setattr(probes, "request", metadata)
     observation = probe("secret", reference, tmp_path, None)
@@ -419,7 +424,8 @@ def test_secret_metadata_present_missing_and_unavailable(
     assert "never-log" not in observation.model_dump_json()
     monkeypatch.setattr(probes, "request", lambda *_args, **_kwargs: b'{"secrets":[]}')
     assert (
-        probe("secret", reference, tmp_path, None).reason == "secret_reference_missing"
+        probe("secret", reference, tmp_path, None).reason
+        == "secret_metadata_contract_failed"
     )
     monkeypatch.setattr(
         probes,
@@ -428,7 +434,10 @@ def test_secret_metadata_present_missing_and_unavailable(
             b'{"secrets":[],"imports":[{"secrets":[{"secretKey":"KEY"}]}]}'
         ),
     )
-    assert probe("secret", reference, tmp_path, None).state == "passed"
+    assert (
+        probe("secret", reference, tmp_path, None).reason
+        == "secret_metadata_contract_failed"
+    )
     monkeypatch.setattr(
         probes,
         "request",
@@ -443,14 +452,14 @@ def test_secret_metadata_present_missing_and_unavailable(
         probes,
         "request",
         lambda *_args, **_kwargs: (
-            b'{"secrets":[{"secretKey":"KEY","secretValue":"never-emit"}]}'
+            b'{"secret":{"secretKey":"KEY","secretValue":"never-emit"}}'
         ),
     )
     assert (
         probe("secret", reference, tmp_path, None).reason
         == "secret_metadata_contract_failed"
     )
-    monkeypatch.delenv("RECOVERY_INFISICAL_TOKEN")
+    monkeypatch.delenv("RECOVERY_INFISICAL_CLIENT_SECRET")
     assert (
         probe("secret", reference, tmp_path, None).reason == "secret_probe_unconfigured"
     )
@@ -483,12 +492,14 @@ def test_secret_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
         "RECOVERY_INFISICAL_PROJECTS",
         json.dumps({"Named": "11111111-1111-1111-1111-111111111111"}),
     )
-    monkeypatch.setenv("RECOVERY_INFISICAL_TOKEN", "never-log")
+    monkeypatch.setenv("RECOVERY_INFISICAL_CLIENT_ID", "fixture-client")
+    monkeypatch.setenv("RECOVERY_INFISICAL_CLIENT_SECRET", "fixture-secret")
+    monkeypatch.setattr(probes, "metadata_token", lambda *_: "never-log")
     monkeypatch.setenv("RECOVERY_INFISICAL_URL", "https://vault.example.test")
     monkeypatch.setattr(
         probes,
         "request",
-        lambda *_args, **_kwargs: b'{"secrets":[{"secretKey":"KEY"}]}',
+        lambda *_args, **_kwargs: b'{"secret":{"secretKey":"KEY"}}',
     )
     assert (
         probe(
