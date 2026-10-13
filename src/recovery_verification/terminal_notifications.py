@@ -15,8 +15,13 @@ from dagster._core.storage.dagster_run import DagsterRun
 from pydantic import AwareDatetime, Field
 
 from recovery_verification.contract import ContractModel, parse_manifest
-from recovery_verification.execution import write_state
+from recovery_verification.execution import read_state, write_state
 from recovery_verification.history import read_bounded, read_history
+from recovery_verification.notification_presentation import (
+    backup_health,
+    plain_report,
+    report_blocks,
+)
 from recovery_verification.notifications import EventReceipt, send_event
 from recovery_verification.orchestration import JOBS, OrchestrationConfig
 from recovery_verification.scorecard import (
@@ -51,11 +56,6 @@ PROVIDER_JOBS = (
 TITLE = "Backup & Recovery Scorecard"
 
 
-def brief(values: list[str] | tuple[str, ...], limit: int) -> str:
-    text = "; ".join(values) or "none"
-    return text if len(text) <= limit else text[:limit] + " (more in evidence)"
-
-
 class TerminalOutbox(ContractModel):
     schema_version: Literal["1"] = "1"
     start_time: AwareDatetime
@@ -79,64 +79,7 @@ def read_outbox(path: Path, start_time: AwareDatetime) -> TerminalOutbox:
 
 
 def backup_summary(target: TargetScore) -> tuple[str, str, str]:
-    daily, weekly = target.tiers[:2]
-    attempt = daily.latest_attempt
-    backups = (
-        [c for c in attempt.checks if c.check_id.startswith("backup_")]
-        if attempt
-        else []
-    )
-    status = (
-        "FAILED"
-        if any(c.state == "failed" for c in backups)
-        else "PASSED"
-        if backups
-        and all(c.state == "passed" for c in backups)
-        and daily.status == "passed"
-        else "UNAVAILABLE"
-    )
-    freshness = (
-        "STALE"
-        if any(c.reason == "backup_stale" for c in backups)
-        else "CURRENT"
-        if status == "PASSED"
-        else "UNAVAILABLE"
-    )
-    verified = weekly.latest_attempt
-    real = (
-        [
-            b
-            for b in verified.provenance.backups
-            if b.kind == "recovery_backup" and b.artifact_sha256 and b.timestamp
-        ]
-        if verified
-        else []
-    )
-    checks = (
-        cast("list[dict[str, Any]]", verified.consumer_evidence.get("checks", []))
-        if verified
-        else []
-    )
-    expected = (
-        {
-            b.source_id
-            for b in verified.provenance.backups
-            if b.kind == "recovery_backup"
-        }
-        if verified
-        else set()
-    )
-    integrity = (
-        "VERIFIED"
-        if real
-        and {b.source_id for b in real} == expected
-        and weekly.status == "passed"
-        and any(
-            c.get("phase") == "integrity" and c.get("state") == "passed" for c in checks
-        )
-        else "UNAVAILABLE"
-    )
-    return status, freshness, integrity
+    return backup_health(target)
 
 
 def scorecard_for_run(
@@ -156,25 +99,39 @@ def scorecard_for_run(
     return build_scorecard(manifest, history, now=terminal_at, policy=config.policy)
 
 
+def run_has_evidence(config: OrchestrationConfig, run: DagsterRun) -> bool:
+    """Only a digest-verified, run-bound journal can establish current evidence."""
+    try:
+        journal = read_state(Path(config.state_directory) / "execution.json")
+        key = run.tags.get("recovery/execution_key", run.run_id)
+        attempt = journal.attempts.get(hashlib.sha256(key.encode()).hexdigest())
+        tier = next((tier for tier, job in JOBS.items() if job == run.job_name), None)
+        return bool(attempt and tier and tier in attempt.reports)
+    except OSError, ValueError:
+        return False
+
+
 def terminal_event(
     config: OrchestrationConfig,
     run: DagsterRun,
     status: str,
     terminal_at: datetime,
+    *,
+    synthetic: bool = False,
 ) -> dict[str, Any]:
     if status not in TERMINAL_EVENTS:
         raise ValueError("terminal_run_status_required")
-    identity = uuid5(NAMESPACE_URL, "recovery-verification:terminal:" + run.run_id)
+    identity = uuid5(
+        NAMESPACE_URL,
+        "recovery-verification:"
+        + ("synthetic:" + status + ":" if synthetic else "terminal:")
+        + run.run_id,
+    )
     link = (
         (config.notification_dagster_url or "").rstrip("/")
         + "/runs/"
         + str(UUID(run.run_id))
     )
-    lines = [
-        f"Dagster: {run.job_name} — {status}",
-        f"Run ID: {run.run_id}",
-        f"Environment: {config.environment}",
-    ]
     score: Scorecard | None = None
     unavailable: str | None = None
     targets: list[dict[str, Any]] = []
@@ -182,11 +139,6 @@ def terminal_event(
         score = scorecard_for_run(config, run, terminal_at)
     except OSError, ValueError:
         unavailable = "recovery_evidence_unavailable"
-    lines.append("Recovery readiness: " + (score.readiness if score else "UNKNOWN"))
-    lines.append(
-        "Full recovery verified: "
-        + ("yes" if score and score.full_recovery_verified else "no")
-    )
     if score:
         for target in score.targets:
             backup, freshness, integrity = backup_summary(target)
@@ -202,68 +154,25 @@ def terminal_event(
                     "prerequisites": list(target.next_actions),
                 }
             )
-            lines.extend(
-                [
-                    f"\n{target.target_id}: backup {backup}; "
-                    f"recovery {target.readiness}",
-                    f"Freshness: {freshness}; integrity: {integrity}",
-                    "Daily / weekly / monthly: "
-                    + " / ".join(t.status.upper() for t in target.tiers),
-                    "Evidence times: "
-                    + " / ".join(
-                        t.latest_attempt.evidence_timestamp.isoformat()
-                        if t.latest_attempt
-                        else "missing"
-                        for t in target.tiers
-                    ),
-                ]
-            )
-            for tier in target.tiers:
-                attempt = tier.latest_attempt
-                if attempt and any(
-                    b.kind == "representative_fixture"
-                    for b in attempt.provenance.backups
-                ):
-                    lines.append(tier.tier + ": representative fixture evidence only")
-            reasons = list(
-                dict.fromkeys(
-                    [*target.reasons, *(r for t in target.tiers for r in t.reasons)]
-                )
-            )
-            lines.append("Failed or unavailable: " + brief(reasons, 350))
-            lines.append("Prerequisites: " + brief(target.next_actions, 180))
-    else:
-        for target_id in sorted(config.checkouts):
-            lines.append(f"\n{target_id}: backup UNAVAILABLE; recovery UNKNOWN")
-            lines.append(
-                "Freshness / integrity / daily / weekly / monthly: UNAVAILABLE"
-            )
-        lines.append("Failed or unavailable: " + str(unavailable))
-        lines.append("Prerequisites: restore readable verification evidence")
-    if status != "SUCCESS":
-        lines.append("Execution failed or canceled; inspect the Dagster run evidence.")
-    lines.extend(
-        [
-            "\nDagster execution status does not establish recovery readiness.",
-            "Independent key custody: not attested by this run; "
-            "separate custody evidence is required.",
-            "Evidence: " + link,
-        ]
+    # Rebuilding retained history alone does not prove this run generated evidence.
+    blocks, findings = report_blocks(
+        score,
+        status,
+        run.job_name,
+        terminal_at,
+        historical=not run_has_evidence(config, run),
+        synthetic=synthetic,
     )
-    message = "\n".join(lines)
-    if len(message) > 3400:
-        message = (
-            message[:2800]
-            + "\nAdditional checks omitted; inspect linked evidence."
-            + "\nIndependent key custody: not attested by this run; "
-            "separate custody evidence is required.\nEvidence: " + link
-        )
+    report_title = ("TEST" if synthetic else "WOOD") + " / BACKUP & RECOVERY"
+    message = plain_report(blocks, report_title, link)
     event = {
         "schema_version": "1",
         "event_id": str(identity),
         "event_type": "recovery.run-completed",
         "source": "recovery-verification",
-        "severity": "error"
+        "severity": "info"
+        if synthetic
+        else "error"
         if status == "FAILURE" or (score and score.readiness == "NOT_READY")
         else "success"
         if status == "SUCCESS" and score and score.readiness == "READY"
@@ -271,7 +180,10 @@ def terminal_event(
         "occurred_at": terminal_at.isoformat(),
         "correlation_id": run.run_id,
         "causation_id": None,
-        "idempotency_key": "recovery-run-" + run.run_id,
+        "idempotency_key": (
+            "recovery-test-" + status.lower() + "-" if synthetic else "recovery-run-"
+        )
+        + run.run_id,
         "metadata": {},
         "data": {
             "title": TITLE,
@@ -285,6 +197,18 @@ def terminal_event(
             "scorecard_reference": reference(score) if score else None,
             "unavailable_reason": unavailable,
             "targets": targets,
+            "report_title": report_title,
+            "report_blocks": blocks,
+            "synthetic": synthetic,
+            "findings": [
+                {
+                    "category": f.category,
+                    "problem": f.problem,
+                    "environments": sorted(f.environments),
+                    "diagnostics": f.diagnostics,
+                }
+                for f in findings
+            ],
         },
     }
     ensure_no_runtime_secrets(json.dumps(event))

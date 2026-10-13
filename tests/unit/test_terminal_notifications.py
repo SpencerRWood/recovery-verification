@@ -25,7 +25,6 @@ from recovery_verification.orchestration import OrchestrationConfig
 from recovery_verification.probes import result
 from recovery_verification.scorecard import History
 from recovery_verification.terminal_notifications import (
-    brief,
     process_terminal_runs,
     read_outbox,
     terminal_event,
@@ -82,11 +81,10 @@ def test_each_terminal_status_has_honest_missing_evidence(
     assert event["data"]["execution_status"] == status
     assert event["data"]["recovery_readiness"] != "READY"
     assert not event["data"]["full_recovery_verified"]
-    assert "backup UNAVAILABLE" in event["data"]["message"]
-    assert "Daily / weekly / monthly" in event["data"]["message"]
+    assert "Execution unverified · evidence unavailable" in event["data"]["message"]
+    assert "Verification: Daily" in event["data"]["message"]
     assert event["data"]["evidence_link"].endswith(run.run_id)
-    assert "Run ID: " + run.run_id in event["data"]["message"]
-    assert "Independent key custody: not attested" in event["data"]["message"]
+    assert "Run ID:" not in event["data"]["message"]
 
 
 @pytest.mark.usefixtures("local")
@@ -118,7 +116,7 @@ def test_success_message_separates_execution_from_readiness(
     )
     assert event["data"]["recovery_readiness"] == readiness
     assert event["data"]["execution_status"] == "SUCCESS"
-    assert "Independent key custody: not attested" in event["data"]["message"]
+    assert "Dagster execution: SUCCESS" in event["data"]["message"]
 
 
 @pytest.mark.usefixtures("local")
@@ -135,7 +133,7 @@ def test_success_is_not_readiness_and_fixture_is_not_backup_integrity(
     event = terminal_event(
         enabled, run, "SUCCESS", datetime.now(UTC) + timedelta(seconds=1)
     )
-    assert "integrity: UNAVAILABLE" in event["data"]["message"]
+    assert "Integrity: Unavailable" in event["data"]["message"]
     assert event["data"]["scorecard_reference"].startswith("sha256:")
 
 
@@ -153,6 +151,27 @@ def test_terminal_event_survives_unreadable_archive(
     )
     assert event["data"]["recovery_readiness"] == "UNKNOWN"
     assert event["data"]["unavailable_reason"] == "recovery_evidence_unavailable"
+
+
+def test_synthetic_report_has_separate_identity_and_no_incident_severity(
+    enabled: OrchestrationConfig,
+) -> None:
+    run = DagsterRun(job_name="recovery_readiness_daily", run_id=str(uuid4()))
+    at = datetime.now(UTC)
+    real = terminal_event(enabled, run, "SUCCESS", at)
+    success = terminal_event(enabled, run, "SUCCESS", at, synthetic=True)
+    failure = terminal_event(enabled, run, "FAILURE", at, synthetic=True)
+    assert len({e["event_id"] for e in (real, success, failure)}) == 3
+    assert len({e["idempotency_key"] for e in (real, success, failure)}) == 3
+    for event in (success, failure):
+        assert event["severity"] == "info"
+        assert event["data"]["synthetic"]
+        assert event["data"]["message"].startswith("TEST / BACKUP & RECOVERY")
+        assert (
+            "no production backup or recovery operation was performed"
+            in event["data"]["message"]
+        )
+    assert not (Path(enabled.state_directory) / "history.json").exists()
 
 
 def test_terminal_scan_covers_all_statuses_and_new_unchanged_successes(
@@ -287,7 +306,6 @@ def test_disabled_and_invalid_inputs_are_explicit(config: OrchestrationConfig) -
         pytest.raises(ValueError, match="not_enabled"),
     ):
         process_terminal_runs(config, instance)
-    assert brief(["a" * 1000], 50).endswith("(more in evidence)")
     with pytest.raises(ValueError, match="terminal_run_status"):
         terminal_event(
             config,
