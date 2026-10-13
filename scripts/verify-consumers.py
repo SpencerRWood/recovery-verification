@@ -45,7 +45,12 @@ def git(root: Path, *args: str) -> str:
 
 
 def verify(  # noqa: PLR0912, PLR0915 -- Explicit local consumer and provenance acceptance gates.
-    source: Path, snapshot: Path, *, weekly: bool = False, monthly: bool = False
+    source: Path,
+    snapshot: Path,
+    *,
+    weekly: bool = False,
+    monthly: bool = False,
+    fixture_consumers: bool = False,
 ) -> dict[str, object]:
     names = git(source, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
     for name in set(names.split("\x00")) - {""}:
@@ -57,6 +62,13 @@ def verify(  # noqa: PLR0912, PLR0915 -- Explicit local consumer and provenance 
         shutil.copy2(path, destination, follow_symlinks=False)
     declaration = json.loads((snapshot / "recovery/consumer.v1.json").read_text())
     owner = declaration["target"]["owning_repository"]
+    if fixture_consumers:
+        # This local source-contract check requires no operational artifacts or
+        # identity. Real encrypted restores have separate runtime evidence.
+        for command in declaration["target"]["validation_commands"]:
+            if command["id"] == "consumer_weekly":
+                command["command"]["args"] = []
+        (snapshot / "recovery/consumer.v1.json").write_text(json.dumps(declaration))
     for args in (
         ("init", "-q"),
         ("config", "user.name", "Consumer verification fixture"),
@@ -176,10 +188,23 @@ def verify(  # noqa: PLR0912, PLR0915 -- Explicit local consumer and provenance 
                 raise ValueError("consumer_scorecard_provenance_mismatch")
     finally:
         os.environ["PATH"] = previous_path
-    local = [check for check in result.checks if check.id != "external_prerequisites"]
+    unavailable_groups = [
+        check
+        for check in result.checks
+        if fixture_consumers
+        and check.id == "current_backup_group"
+        and check.state == "unavailable"
+        and check.reason in {"backup_artifact_missing", "backup_unreadable"}
+    ]
+    local = [
+        check
+        for check in result.checks
+        if check.id != "external_prerequisites" and check not in unavailable_groups
+    ]
     if not local or any(check.state != "passed" for check in local):
         raise ValueError("consumer_local_preflight_failed")
-    if result.readiness_state != "passed" or any(
+    expected_state = "unavailable" if unavailable_groups else "passed"
+    if result.readiness_state != expected_state or any(
         check.id == "external_prerequisites" for check in result.checks
     ):
         raise ValueError("consumer_local_scope_mismatch")
@@ -212,6 +237,7 @@ def main() -> int:
     parser.add_argument("--weekly", action="store_true")
     parser.add_argument("--monthly", action="store_true")
     parser.add_argument("--configured-checkouts", action="store_true")
+    parser.add_argument("--fixture-consumers", action="store_true")
     args = parser.parse_args()
     results = []
     previous_alarm = signal.getsignal(signal.SIGALRM)
@@ -249,6 +275,7 @@ def main() -> int:
                         snapshot,
                         weekly=args.weekly,
                         monthly=args.monthly,
+                        fixture_consumers=args.fixture_consumers,
                     )
                 )
     except OSError, ValueError, KeyError, subprocess.SubprocessError:

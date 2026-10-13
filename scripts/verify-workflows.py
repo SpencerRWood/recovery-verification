@@ -18,9 +18,9 @@ def main() -> int:
     paths = json.loads(consumers)
     environment = dict(
         os.environ,
-        RECOVERY_GOVERNANCE_CHECKOUTS=os.pathsep.join([str(Path.cwd()), *paths]),
+        RECOVERY_GOVERNANCE_CHECKOUTS=str(Path.cwd()),
     )
-    return subprocess.run(  # noqa: S603 — explicit operator-provided contract checkout.
+    result = subprocess.run(  # noqa: S603 — explicit operator-provided contract checkout.
         [
             sys.executable,
             "-m",
@@ -36,6 +36,34 @@ def main() -> int:
         check=False,
         timeout=30,
     ).returncode
+    if result:
+        return result
+    # Consumers own their approved publication/deployment semantics, including
+    # homelab's guarded automatic main delivery. Require their current contracts
+    # rather than imposing the provider's manual-only trigger matrix on them.
+    for path in paths:
+        checkout = Path(path)
+        if not (checkout / "tests/test_workflow_governance.py").is_file():
+            return 4
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "tests",
+                "-p",
+                "test_workflow_governance.py",
+            ],
+            cwd=checkout,
+            env=environment,
+            check=False,
+            timeout=30,
+        ).returncode
+        if result:
+            return result
+    return 0
 
 
 if __name__ == "__main__":
