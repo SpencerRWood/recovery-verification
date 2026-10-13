@@ -482,6 +482,53 @@ def test_artifact_catalog_and_templates(
 
 
 @pytest.mark.parametrize(
+    ("image", "repository", "registry"),
+    [
+        ("ghcr.io/example/app:v0.7.0", "example/app", "ghcr.io"),
+        ("ghcr.io/example/app", "example/app", "ghcr.io"),
+        ("ubuntu:24.04", "library/ubuntu", "registry-1.docker.io"),
+        ("registry.example:5000/team/app:stable", "team/app", "registry.example:5000"),
+    ],
+)
+def test_digest_pins_use_repository_name_and_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    image: str,
+    repository: str,
+    registry: str,
+) -> None:
+    digest = "sha256:" + "a" * 64
+    headers = Message()
+    headers["WWW-Authenticate"] = f'Bearer realm="https://{registry}/token"'
+    challenge = HTTPError("https://" + registry, 401, "auth", headers, None)
+    calls = Mock(side_effect=[challenge, b'{"token":"anonymous"}', b""])
+    monkeypatch.setattr(probes, "request", calls)
+    assert (
+        probe("artifact", f"oci://{image}@{digest}", tmp_path, None).state == "passed"
+    )
+    url = f"https://{registry}/v2/{repository}/manifests/{digest}"
+    assert calls.call_args_list[0].args == (url,)
+    assert calls.call_args_list[2].args == (url,)
+    assert parse_qs(urlsplit(calls.call_args_list[1].args[0]).query)["scope"] == [
+        f"repository:{repository}:pull"
+    ]
+
+
+def test_missing_digest_does_not_fall_back_to_available_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = Mock(
+        side_effect=HTTPError("https://ghcr.io", 404, "missing", Message(), None)
+    )
+    monkeypatch.setattr(probes, "request", missing)
+    image = "oci://ghcr.io/example/app:stable@sha256:" + "b" * 64
+    assert probe("artifact", image, tmp_path, None).reason == "artifact_missing"
+    missing.assert_called_once_with(
+        "https://ghcr.io/v2/example/app/manifests/sha256:" + "b" * 64, head=True
+    )
+
+
+@pytest.mark.parametrize(
     ("code", "expected"),
     [(404, "failed"), (503, "unavailable"), (403, "unavailable"), (401, "unavailable")],
 )

@@ -138,6 +138,9 @@ def artifact(reference: str, root: Path) -> Observation:  # noqa: PLR0911,PLR091
         repository = "library/" + repository
     if "@" in repository:
         repository, tag = repository.rsplit("@", 1)
+        # A tag is only a human-readable hint when a digest is selected. It is
+        # not part of the registry repository name or anonymous pull scope.
+        repository = repository.rsplit(":", 1)[0]
     elif ":" in repository:
         repository, tag = repository.rsplit(":", 1)
     else:
@@ -154,7 +157,7 @@ def artifact(reference: str, root: Path) -> Observation:  # noqa: PLR0911,PLR091
         fields = dict(re.findall(r'(realm|service|scope)="([^"\r\n]+)"', challenge))
         realm = fields.get("realm", "")
         authority = urlsplit(realm)
-        if authority.hostname not in {
+        if authority.netloc not in {
             registry,
             "auth.docker.io" if registry == "registry-1.docker.io" else registry,
         }:
