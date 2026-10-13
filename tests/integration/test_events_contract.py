@@ -106,8 +106,8 @@ def test_actual_events_service_contract(
         assert request.title == "Backup & Recovery Scorecard"
         assert request.message == envelope.data["message"]
         assert terminal_router.channels(request, envelope.event_type) == ["telegram"]
-        assert "backup UNAVAILABLE" in request.message
-        assert "recovery UNKNOWN" in request.message
+        assert "Execution unverified · evidence unavailable" in request.message
+        assert "Recovery readiness: UNKNOWN" in request.message
     # Models loaded from another checkout must not leak into unrelated tests.
     for name in tuple(sys.modules):
         if name == "events_service" or name.startswith("events_service."):
