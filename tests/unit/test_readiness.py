@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from email.message import Message
 from pathlib import Path
@@ -111,6 +112,53 @@ def test_missing_checkout_prevents_probes(manifest: Manifest) -> None:
     runner = Mock(side_effect=AssertionError("unsafe execution"))
     assert run_readiness(manifest, {}, runner).readiness == "UNKNOWN"
     runner.assert_not_called()
+
+
+def test_native_prerequisite_findings_are_retained_separately(
+    manifest: Manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(readiness, "_checkout", lambda *_: result("passed", "checkout"))
+    monkeypatch.setattr(
+        readiness, "_interfaces", lambda *_: result("passed", "interfaces")
+    )
+    native = ConsumerResult.model_validate_json(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "mode": "preflight",
+                "readiness_state": "failed",
+                "checks": [
+                    {
+                        "id": "current_backup_group",
+                        "state": "passed",
+                        "reason": "backup_group_integrity_verified",
+                    },
+                    {
+                        "id": "independent_key_custody",
+                        "state": "failed",
+                        "reason": "independent_key_custody_unverified",
+                    },
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(readiness, "invoke_readiness", lambda *_args, **_kwargs: native)
+    report = run_readiness(
+        manifest,
+        {manifest.targets[0].id: tmp_path},
+        lambda *_: result("passed", "available"),
+    )
+    details = [c for c in report.checks if c.check_id.startswith("consumer_detail_")]
+    assert len(details) == 2
+    assert any(
+        c.check_id.endswith("current_backup_group") and c.state == "passed"
+        for c in details
+    )
+    assert any(
+        c.check_id.endswith("independent_key_custody") and c.state == "failed"
+        for c in details
+    )
+    assert report.readiness == "NOT_READY"
 
 
 @pytest.mark.usefixtures("local")
@@ -479,6 +527,94 @@ def test_artifact_catalog_and_templates(
     (tmp_path / "empty.yml").write_text("services: {}\n")
     assert probe("artifact", "repo://empty.yml", tmp_path, None).state == "unavailable"
     assert probes.images([{"image": "ubuntu"}]) == ["ubuntu"]
+
+
+def test_explicit_catalog_requires_immutable_registry_references(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = tmp_path / "artifacts.json"
+    lookup = Mock(return_value=b"")
+    monkeypatch.setattr(probes, "request", lookup)
+    catalog.write_text(
+        json.dumps({"schema_version": "1", "references": ["oci://ubuntu:latest"]})
+    )
+    assert artifact_observation(tmp_path).reason == "artifact_catalog_invalid"
+    lookup.assert_not_called()
+    catalog.write_text(
+        json.dumps(
+            {"schema_version": "1", "references": ["oci://ubuntu@sha256:" + "a" * 64]}
+        )
+    )
+    assert artifact_observation(tmp_path).state == "passed"
+    catalog.write_text(
+        json.dumps({"schema_version": "1", "references": ["build://Dockerfile"]})
+    )
+    assert artifact_observation(tmp_path).reason == "artifact_catalog_checked"
+    assert artifact_observation(tmp_path).state == "failed"
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+    assert artifact_observation(tmp_path).state == "unavailable"
+
+
+def artifact_observation(root: Path) -> readiness.Observation:
+    return probe("artifact", "repo://artifacts.json", root, None)
+
+
+def test_lscr_catalog_uses_documented_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup = Mock(return_value=b"")
+    monkeypatch.setattr(probes, "request", lookup)
+    image = "lscr.io/linuxserver/calibre:latest@sha256:" + "a" * 64
+    assert probe("artifact", "oci://" + image, tmp_path, None).state == "passed"
+    lookup.assert_called_once_with(
+        "https://ghcr.io/v2/linuxserver/calibre/manifests/sha256:" + "a" * 64, head=True
+    )
+
+
+def test_private_ghcr_auth_is_scoped_and_failure_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    headers = Message()
+    headers["WWW-Authenticate"] = (
+        'Bearer realm="https://ghcr.io/token",service="ghcr.io"'
+    )
+    challenge = HTTPError("https://ghcr.io", 401, "auth", headers, None)
+    lookup = Mock(side_effect=[challenge, b'{"token":"anonymous"}', b""])
+    monkeypatch.setattr(probes, "request", lookup)
+    monkeypatch.setenv("RECOVERY_GHCR_USERNAME", "scoped-reader")
+    monkeypatch.setenv("RECOVERY_GHCR_TOKEN", "test-only-credential")
+    image = "oci://ghcr.io/owner/app@sha256:" + "a" * 64
+    assert probe("artifact", image, tmp_path, None).state == "passed"
+    assert lookup.call_args_list[1].kwargs["basic"] == (
+        "scoped-reader",
+        "test-only-credential",
+    )
+    lookup.side_effect = [
+        challenge,
+        HTTPError("https://ghcr.io/token", 403, "denied", Message(), None),
+    ]
+    assert (
+        probe("artifact", image, tmp_path, None).reason == "registry_auth_unavailable"
+    )
+
+
+def test_credentials_never_go_to_unapproved_authority() -> None:
+    with pytest.raises(ValueError, match="credential_authority"):
+        probes.request("https://example.test/token", basic=("reader", "test-only"))
+
+
+def test_registry_accepts_oci_and_docker_multiarch_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opener = Mock()
+    opener.open.return_value = nullcontext(Mock(read=Mock(return_value=b"")))
+    monkeypatch.setattr(probes, "build_opener", Mock(return_value=opener))
+    probes.request(
+        "https://registry.example/v2/owner/image/manifests/sha256:abc", head=True
+    )
+    header = opener.open.call_args.args[0].get_header("Accept")
+    assert "application/vnd.oci.image.index.v1+json" in header
+    assert "application/vnd.docker.distribution.manifest.list.v2+json" in header
 
 
 @pytest.mark.parametrize(

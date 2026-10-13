@@ -157,7 +157,12 @@ def _checkout(target: Target, root: Path) -> Observation:
     return Observation(state="passed", reason="exact_clean_checkout")
 
 
-def _consumer(target: Target, root: Path, check_id: str) -> Observation:
+def _consumer(
+    target: Target,
+    root: Path,
+    check_id: str,
+    details: list[tuple[str, Observation]] | None = None,
+) -> Observation:
     try:
         result = invoke_readiness(target, root, check_id, trusted=True)
     except InvocationError:
@@ -165,6 +170,23 @@ def _consumer(target: Target, root: Path, check_id: str) -> Observation:
             state="unavailable",
             reason="consumer_unavailable",
             category="verification_infrastructure",
+        )
+    if details is not None:
+        prefix = "consumer_detail_" + sha256(check_id.encode()).hexdigest()[:8] + "_"
+        details.extend(
+            (
+                prefix + check.id,
+                Observation(
+                    state=check.state,
+                    reason=check.reason,
+                    category="recovery_prerequisite"
+                    if check.state == "failed"
+                    else "verification_infrastructure"
+                    if check.state in {"unavailable", "skipped"}
+                    else "none",
+                ),
+            )
+            for check in result.checks
         )
     states = tuple(check.state for check in result.checks)
     state: State = "passed"
@@ -277,6 +299,7 @@ def run_readiness(  # noqa: PLR0912 -- Explicit selection/boundary guards fail c
             ),
             ("checkout", partial(Observation.model_validate, boundary)),
         ]
+        native_details: list[tuple[str, Observation]] = []
         if root is not None:
             plans.append(("entrypoints", partial(_interfaces, target, root)))
             for validation in target.validation_commands:
@@ -284,7 +307,9 @@ def run_readiness(  # noqa: PLR0912 -- Explicit selection/boundary guards fail c
                     plans.append(
                         (
                             f"consumer_{validation.id}",
-                            partial(_consumer, target, root, validation.id),
+                            partial(
+                                _consumer, target, root, validation.id, native_details
+                            ),
                         )
                     )
             for dependency in target.required_dependencies:
@@ -349,6 +374,17 @@ def run_readiness(  # noqa: PLR0912 -- Explicit selection/boundary guards fail c
                     duration_seconds=monotonic() - start,
                 )
             )
+        checks.extend(
+            ReadinessCheck(
+                **detail.model_dump(),
+                target_id=target.id,
+                check_id=identity,
+                tested_revision=target.revision,
+                timestamp=datetime.now(UTC),
+                duration_seconds=0.0,
+            )
+            for identity, detail in native_details
+        )
         if root is not None and boundary.state == "passed":
             final = _checkout(target, root)
             checks.append(

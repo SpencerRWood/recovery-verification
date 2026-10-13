@@ -23,6 +23,22 @@ CATEGORIES = (
 # Catalog checks aggregate child results; their state, never their name, decides
 # whether they are actionable. Passed/not-applicable diagnostics are filtered.
 DESCRIPTIONS = {
+    "independent_key_custody_unverified": (
+        5,
+        "Independent encryption-key custody remains unverified",
+        "Complete OP-543 with acceptable independent custody evidence.",
+    ),
+    "artifact_publication_required": (
+        2,
+        "Required local image has no verified recovery artifact",
+        "Publish a reviewed immutable image or verify an independently "
+        "retained image export.",
+    ),
+    "registry_auth_unavailable": (
+        2,
+        "Registry authentication is unavailable",
+        "Configure the scoped registry reader and verify the selected digest.",
+    ),
     "backup_stale": (
         0,
         "Backup evidence is stale",
@@ -152,6 +168,8 @@ class Finding:
 
 
 def describe(check: str, reason: str, state: str) -> tuple[str, str, str]:
+    if check.startswith("consumer_detail_"):
+        check = check.split("_", 3)[-1]
     known = DESCRIPTIONS.get(reason)
     category = (
         CATEGORIES[known[0]]
@@ -237,7 +255,13 @@ def findings(score: Scorecard | None) -> list[Finding]:
                 )
                 for diagnostic in diagnostics:
                     covered.add(diagnostic.check_id + ":" + diagnostic.reason)
-                    if diagnostic.state in {"passed", "not_applicable"}:
+                    if diagnostic.state in {"passed", "not_applicable"} or (
+                        diagnostic.reason == "consumer_local_checks"
+                        and any(
+                            d.check_id.startswith("consumer_detail_")
+                            for d in diagnostics
+                        )
+                    ):
                         continue
                     # Consumer IDs include the target prefix; remove only that
                     # prefix so a shared diagnostic can accurately merge targets.
@@ -269,6 +293,14 @@ def findings(score: Scorecard | None) -> list[Finding]:
             environment(t)
             for t in score.targets
             if t.owning_repository.rsplit("/", 1)[-1] in {"homelab", "infrastructure"}
+            and not (
+                t.tiers[0].latest_attempt
+                and t.tiers[0].latest_attempt.currency == "current"
+                and any(
+                    c.check_id.endswith("_independent_key_custody")
+                    for c in t.tiers[0].latest_attempt.checks
+                )
+            )
         }
         if custody_environments:
             found[("custody", "OP-543", "unavailable")] = Finding(
