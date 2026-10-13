@@ -6,10 +6,11 @@ import re
 import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from dagster import RunRequest
 from dagster._utils.schedules import is_valid_cron_schedule
-from pydantic import Field, model_validator
+from pydantic import AwareDatetime, Field, model_validator
 
 from recovery_verification.contract import (
     Command,
@@ -62,6 +63,11 @@ class OrchestrationConfig(ContractModel):
     manifest_exports: dict[str, Command] = Field(default_factory=dict)
     isolated_test_mode: bool = False
     notifications_enabled: bool = False
+    notification_start_time: AwareDatetime | None = None
+    notification_dagster_url: Annotated[str, Field(max_length=512)] | None = None
+    notification_code_location: Annotated[str, Field(min_length=1, max_length=128)] = (
+        "recovery-verification"
+    )
     policy: ScorecardPolicy = Field(default_factory=ScorecardPolicy)
     probe_attempts: Annotated[int, Field(ge=1, le=3)] = 2
 
@@ -75,6 +81,18 @@ class OrchestrationConfig(ContractModel):
             raise ValueError("absolute_checkouts_required")
         if not Path(self.state_directory).is_absolute():
             raise ValueError("absolute_state_directory_required")
+        if self.notifications_enabled:
+            url = urlsplit(self.notification_dagster_url or "")
+            if (
+                self.notification_start_time is None
+                or url.scheme != "https"
+                or not url.hostname
+                or url.username
+                or url.password
+                or url.query
+                or url.fragment
+            ):
+                raise ValueError("explicit_terminal_notification_inputs_required")
         ensure_no_runtime_secrets(self.model_dump_json())
         return self
 

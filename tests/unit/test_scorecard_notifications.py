@@ -170,7 +170,7 @@ def test_transport_bounded_auth_and_sanitized_failure(
     }
     if outcome == "missing_token":
         monkeypatch.delenv("RECOVERY_EVENTS_TOKEN")
-    assert notifications.send_event(event) == (outcome == "success")
+    assert bool(notifications.send_event(event)) == (outcome == "success")
     assert len(requests) == (
         3
         if outcome in {"outage", "status"}

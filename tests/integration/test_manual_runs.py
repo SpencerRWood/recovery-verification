@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from dagster import DagsterInstance
 
 from recovery_verification import manual
 from recovery_verification.orchestration import OrchestrationConfig
@@ -32,6 +33,7 @@ def test_manual_operational_requests(
     path = tmp_path / "orchestration.json"
     path.write_text(config.model_dump_json())
     monkeypatch.setenv("RECOVERY_ORCHESTRATION_CONFIG", str(path))
+    monkeypatch.setattr(DagsterInstance, "get", DagsterInstance.ephemeral)
     job = Mock()
     job.execute_in_process.return_value = Mock(
         success=successful, run_id="simulated-run"
@@ -45,6 +47,9 @@ def test_manual_operational_requests(
     response = json.loads(capsys.readouterr().out)
     assert response["assurance"] == "inspect_retained_evidence"
     assert response["run_id"] == "simulated-run"
+    assert isinstance(
+        job.execute_in_process.call_args.kwargs["instance"], DagsterInstance
+    )
     assert (
         job.execute_in_process.call_args.kwargs["tags"]["recovery/execution_key"]
         == "test"
