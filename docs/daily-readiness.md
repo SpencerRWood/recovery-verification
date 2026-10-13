@@ -40,12 +40,18 @@ registry outages and unresolved image templates remain unavailable. Tags attest
 only to availability at observation time, not immutable artifact identity.
 
 Secret probes use Infisical metadata with `viewSecretValue=false` and reference
-expansion disabled. Inject `RECOVERY_INFISICAL_URL` and
-`RECOVERY_INFISICAL_TOKEN` into the process; never put tokens in configuration,
+expansion and imported/personal secrets disabled. Inject `RECOVERY_INFISICAL_URL`,
+`RECOVERY_INFISICAL_CLIENT_ID` and `RECOVERY_INFISICAL_CLIENT_SECRET` through the
+existing protected runtime resolver. The bounded worker exchanges the dedicated
+Universal Auth identity for a short-lived token in memory and refreshes expired
+tokens. No operator token or persisted access token is accepted. Never put tokens in configuration,
 manifests, CLI arguments or evidence. `RECOVERY_INFISICAL_PROJECTS` is a JSON map
 from declared project names to UUIDs. Missing configuration or denied metadata
-access means unavailable; a successful metadata listing without a required key
-fails. Unexpected secret values are rejected without logging the response.
+access means unavailable. Each request selects one exact shared secret name using
+the [Infisical retrieval API](https://infisical.com/docs/api-reference/endpoints/secrets/read);
+it never lists a folder. HTTP 403/404 does not establish that a required key is
+absent. Unexpected secret values or a mismatched name are rejected without logging
+the response.
 
 Storage probes require `RECOVERY_LOCAL_STORAGE=1`, an explicit assertion that the
 worker sees the target's storage namespace. They check declared `path:///` and

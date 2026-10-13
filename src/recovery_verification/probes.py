@@ -1,6 +1,7 @@
 """Read-only prerequisite probes isolated behind a bounded worker process."""
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -23,6 +24,7 @@ from recovery_verification.models import normalize_readiness
 from recovery_verification.readiness import Observation
 
 LIMIT = 1048576
+_metadata_login: tuple[str, str, str, str, float] | None = None
 
 
 class ArtifactCatalog(ContractModel):
@@ -35,6 +37,7 @@ class ArtifactCatalog(ContractModel):
             not (
                 re.fullmatch(r"oci://[a-zA-Z0-9_./:-]+@sha256:[0-9a-f]{64}", item)
                 or item.startswith("build://")
+                or item.startswith("image-archive:///")
             )
             for item in self.references
         ):
@@ -67,6 +70,7 @@ def request(
     token: str = "",
     head: bool = False,
     basic: tuple[str, str] | None = None,
+    payload: dict[str, str] | None = None,
 ) -> bytes:
     parsed = urlsplit(url)
     if (
@@ -89,9 +93,18 @@ def request(
             raise ValueError("unsupported_registry_credential_authority")
         credentials = base64.b64encode(":".join(basic).encode()).decode()
         headers["Authorization"] = "Basic " + credentials
+    if payload is not None:
+        if parsed.path != "/api/v1/auth/universal-auth/login" or basic or token:
+            raise ValueError("unsupported_metadata_auth_endpoint")
+        headers["Content-Type"] = "application/json"
     opener = build_opener(ProxyHandler({}), NoRedirect())
     with opener.open(
-        Request(url, headers=headers, method="HEAD" if head else "GET"),  # noqa: S310 -- HTTPS scheme validated above.
+        Request(  # noqa: S310 -- HTTPS scheme validated above.
+            url,
+            headers=headers,
+            data=json.dumps(payload).encode() if payload is not None else None,
+            method="POST" if payload is not None else "HEAD" if head else "GET",
+        ),
         timeout=5,
     ) as response:
         data: bytes = response.read(LIMIT + 1)
@@ -140,7 +153,84 @@ def explicit_catalog(path: Path, root: Path) -> Observation:
     )
 
 
+def image_archive(reference: str) -> Observation:  # noqa: PLR0911 -- Preserve distinct artifact/custody failures.
+    """Verify an independently retained encrypted image and its retrieval proof."""
+    if os.environ.get("RECOVERY_LOCAL_STORAGE") != "1":
+        return result("unavailable", "storage_namespace_unconfigured")
+    parsed = urlsplit(reference)
+    path = Path(unquote(parsed.path))
+    if parsed.netloc or parsed.query or parsed.fragment or ".." in path.parts:
+        return result("failed", "image_archive_reference_invalid")
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > LIMIT:
+            return result("failed", "image_archive_metadata_invalid")
+        document = json.loads(path.read_text())
+        name = document["artifact"]
+        if (
+            document["schema_version"] != "1"
+            or document["format"] != "docker-save-age"
+            or Path(name).name != name
+            or name in {".", ".."}
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", document["image_id"])
+            or not re.fullmatch(r"[0-9a-f]{64}", document["ciphertext_sha256"])
+            or not re.fullmatch(r"[0-9a-f]{64}", document["archive_sha256"])
+            or not document["recipient"].startswith("age1")
+            or not re.fullmatch(
+                r"[^/\s]+:/[^\s]+", document["independent_storage_source"]
+            )
+        ):
+            return result("failed", "image_archive_metadata_invalid")
+        filesystem = json.loads(
+            subprocess.check_output(  # noqa: S603 -- Fixed read-only mount inspector.
+                [  # noqa: S607 -- The deployed Linux runtime supplies findmnt.
+                    "findmnt",
+                    "--json",
+                    "--target",
+                    str(path),
+                    "--output",
+                    "SOURCE,FSTYPE",
+                ],
+                timeout=5,
+                stderr=subprocess.DEVNULL,
+            )
+        )["filesystems"]
+        if filesystem != [
+            {"source": document["independent_storage_source"], "fstype": "nfs"}
+        ]:
+            return result("failed", "image_archive_storage_mismatch")
+        artifact_path = path.parent / name
+        if artifact_path.is_symlink() or not artifact_path.is_file():
+            return result("failed", "image_archive_missing")
+        if artifact_path.stat().st_size != document["size_bytes"]:
+            return result("failed", "image_archive_integrity_failed")
+        with artifact_path.open("rb") as stream:
+            if stream.read(22) != b"age-encryption.org/v1\n":
+                return result("failed", "image_archive_encryption_invalid")
+            stream.seek(0)
+            checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+        if checksum != document["ciphertext_sha256"]:
+            return result("failed", "image_archive_integrity_failed")
+        proof_path = path.with_name("retrieval.json")
+        if not proof_path.is_file() or proof_path.is_symlink():
+            return result("unavailable", "image_archive_retrieval_unverified")
+        proof = json.loads(proof_path.read_text())
+        if (
+            proof.get("state") != "passed"
+            or proof.get("plaintext_persisted") is not False
+            or any(
+                proof.get(key) != document[key]
+                for key in ("image_id", "archive_sha256", "ciphertext_sha256")
+            )
+        ):
+            return result("unavailable", "image_archive_retrieval_unverified")
+    except OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError:
+        return result("unavailable", "image_archive_unreadable")
+    return result("passed", "image_archive_available")
+
+
 def artifact(reference: str, root: Path) -> Observation:  # noqa: PLR0911,PLR0912 -- Registry/capability failures have distinct outcomes.
+    if reference.startswith("image-archive://"):
+        return image_archive(reference)
     if reference.startswith("build://"):
         source = repository_path(root, "repo://" + reference.removeprefix("build://"))
         return result(
@@ -255,6 +345,34 @@ def artifact(reference: str, root: Path) -> Observation:  # noqa: PLR0911,PLR091
     return result("passed", "artifact_available")
 
 
+def metadata_token(base: str, client: str, credential: str) -> str:
+    """Mint bounded metadata identity tokens in memory; no operator-token fallback."""
+    global _metadata_login  # noqa: PLW0603 -- Worker-local cache dies with the bounded probe process.
+    if (
+        _metadata_login is not None
+        and _metadata_login[:3] == (base, client, credential)
+        and time() < _metadata_login[4]
+    ):
+        return _metadata_login[3]
+    document = json.loads(
+        request(
+            base.rstrip("/") + "/api/v1/auth/universal-auth/login",
+            payload={"clientId": client, "clientSecret": credential},
+        )
+    )
+    token, lifetime = document.get("accessToken"), document.get("expiresIn")
+    if (
+        not isinstance(token, str)
+        or not token
+        or isinstance(lifetime, bool)
+        or not isinstance(lifetime, int)
+        or not 10 <= lifetime <= 900
+    ):
+        raise ValueError("metadata_identity_token_contract_invalid")
+    _metadata_login = (base, client, credential, token, time() + lifetime - 5)
+    return token
+
+
 def secrets(reference: str, root: Path) -> Observation:  # noqa: PLR0911 -- Explicit metadata-only capability guards.
     parsed = urlsplit(reference)
     if parsed.scheme != "infisical":
@@ -282,9 +400,10 @@ def secrets(reference: str, root: Path) -> Observation:  # noqa: PLR0911 -- Expl
     project_id = project_ids.get(project, project)
     if not re.fullmatch(r"[0-9a-fA-F-]{36}", project_id):
         return result("unavailable", "secret_project_unconfigured")
-    token = os.environ.get("RECOVERY_INFISICAL_TOKEN", "")
+    client = os.environ.get("RECOVERY_INFISICAL_CLIENT_ID", "")
+    credential = os.environ.get("RECOVERY_INFISICAL_CLIENT_SECRET", "")
     base = os.environ.get("RECOVERY_INFISICAL_URL", "")
-    if not token or not base:
+    if not client or not credential or not base:
         return result("unavailable", "secret_probe_unconfigured")
     environment, name = parts[0], parts[-1]
     path = "/" + "/".join(parts[1:-1])
@@ -295,32 +414,35 @@ def secrets(reference: str, root: Path) -> Observation:  # noqa: PLR0911 -- Expl
             "secretPath": path,
             "viewSecretValue": "false",
             "expandSecretReferences": "false",
-            "includeImports": "true",
-            "recursive": "false",
-            "includePersonalOverrides": "false",
+            "includeImports": "false",
+            "type": "shared",
         }
     )
     try:
+        token = metadata_token(base, client, credential)
         document = json.loads(
-            request(base.rstrip("/") + "/api/v4/secrets?" + query, token=token)
+            request(
+                base.rstrip("/")
+                + "/api/v4/secrets/"
+                + quote(name, safe="")
+                + "?"
+                + query,
+                token=token,
+            )
         )
-    except HTTPError:
+    except HTTPError, ValueError:
         # Authentication/authorization, missing environment and service failures
         # do not establish that an individual required key is absent.
         return result("unavailable", "secret_service_unavailable")
-    entries = list(document["secrets"])
-    for imported in document.get("imports", []):
-        entries.extend(imported["secrets"])
-    if any(entry.get("secretValue") not in {None, ""} for entry in entries):
+    entry = document.get("secret")
+    if (
+        not isinstance(entry, dict)
+        or document.get("imports")
+        or entry.get("secretValue") not in (None, "")
+        or entry.get("secretKey") != name
+    ):
         return result("unavailable", "secret_metadata_contract_failed")
-    return result(
-        "passed"
-        if any(entry.get("secretKey") == name for entry in entries)
-        else "failed",
-        "secret_reference_present"
-        if any(entry.get("secretKey") == name for entry in entries)
-        else "secret_reference_missing",
-    )
+    return result("passed", "secret_reference_present")
 
 
 def probe(kind: str, reference: str, root: Path, max_age: int | None) -> Observation:  # noqa: PLR0911,PLR0912 -- Declarative kind dispatch and storage guards.
@@ -407,6 +529,23 @@ class BoundedProbe:
     def __call__(
         self, kind: str, reference: str, root: Path, max_age: int | None
     ) -> Observation:
+        archive_catalog = False
+        if kind == "artifact" and reference.startswith("repo://"):
+            try:
+                path = repository_path(root, reference)
+                if path.is_file() and path.suffix == ".json":
+                    catalog = ArtifactCatalog.model_validate_json(path.read_text())
+                    archive_catalog = any(
+                        item.startswith("image-archive://")
+                        for item in catalog.references
+                    )
+            except OSError, ValueError:
+                pass
+        # Full ciphertext checksums can exceed the network-probe budget on NFS.
+        # Bound them explicitly within the existing one-hour recovery run limit.
+        timeout = (
+            900 if archive_catalog or reference.startswith("image-archive://") else 30
+        )
         environment = {
             key: value
             for key, value in os.environ.items()
@@ -414,7 +553,8 @@ class BoundedProbe:
             in {
                 "PATH",
                 "RECOVERY_INFISICAL_URL",
-                "RECOVERY_INFISICAL_TOKEN",
+                "RECOVERY_INFISICAL_CLIENT_ID",
+                "RECOVERY_INFISICAL_CLIENT_SECRET",
                 "RECOVERY_INFISICAL_PROJECTS",
                 "RECOVERY_LOCAL_STORAGE",
                 "RECOVERY_GHCR_USERNAME",
@@ -443,7 +583,7 @@ class BoundedProbe:
             )
             process.stdin.close()
             try:
-                output = _output(process, 30)
+                output = _output(process, timeout)
                 observation = Observation.model_validate_json(output)
                 return (
                     observation
