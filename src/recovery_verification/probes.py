@@ -1,5 +1,6 @@
 """Read-only prerequisite probes isolated behind a bounded worker process."""
 
+import base64
 import json
 import os
 import re
@@ -8,17 +9,37 @@ import subprocess
 import sys
 from pathlib import Path
 from time import time
+from typing import Literal, Self
 from urllib.error import HTTPError
 from urllib.parse import quote, unquote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 import yaml
+from pydantic import Field, model_validator
 
+from recovery_verification.contract import ContractModel, Reference
 from recovery_verification.invocation import _output, _stop
 from recovery_verification.models import normalize_readiness
 from recovery_verification.readiness import Observation
 
 LIMIT = 1048576
+
+
+class ArtifactCatalog(ContractModel):
+    schema_version: Literal["1"]
+    references: tuple[Reference, ...] = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def exact_artifacts(self) -> Self:
+        if len(set(self.references)) != len(self.references) or any(
+            not (
+                re.fullmatch(r"oci://[a-zA-Z0-9_./:-]+@sha256:[0-9a-f]{64}", item)
+                or item.startswith("build://")
+            )
+            for item in self.references
+        ):
+            raise ValueError("immutable_artifact_catalog_required")
+        return self
 
 
 def result(state: str, reason: str) -> Observation:
@@ -40,7 +61,13 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def request(url: str, *, token: str = "", head: bool = False) -> bytes:
+def request(
+    url: str,
+    *,
+    token: str = "",
+    head: bool = False,
+    basic: tuple[str, str] | None = None,
+) -> bytes:
     parsed = urlsplit(url)
     if (
         parsed.scheme != "https"
@@ -51,10 +78,17 @@ def request(url: str, *, token: str = "", head: bool = False) -> bytes:
         raise ValueError("invalid endpoint")
     headers = {
         "Accept": "application/json, application/vnd.oci.image.manifest.v1+json, "
-        "application/vnd.docker.distribution.manifest.v2+json"
+        "application/vnd.oci.image.index.v1+json, "
+        "application/vnd.docker.distribution.manifest.v2+json, "
+        "application/vnd.docker.distribution.manifest.list.v2+json"
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if basic:
+        if parsed.netloc != "ghcr.io" or parsed.path != "/token" or token:
+            raise ValueError("unsupported_registry_credential_authority")
+        credentials = base64.b64encode(":".join(basic).encode()).decode()
+        headers["Authorization"] = "Basic " + credentials
     opener = build_opener(ProxyHandler({}), NoRedirect())
     with opener.open(
         Request(url, headers=headers, method="HEAD" if head else "GET"),  # noqa: S310 -- HTTPS scheme validated above.
@@ -95,11 +129,32 @@ def images(document: object) -> list[str]:
     return []
 
 
+def explicit_catalog(path: Path, root: Path) -> Observation:
+    try:
+        catalog = ArtifactCatalog.model_validate_json(path.read_text())
+    except ValueError:
+        return result("failed", "artifact_catalog_invalid")
+    return combine(
+        [artifact(item, root) for item in catalog.references],
+        "artifact_catalog_checked",
+    )
+
+
 def artifact(reference: str, root: Path) -> Observation:  # noqa: PLR0911,PLR0912 -- Registry/capability failures have distinct outcomes.
+    if reference.startswith("build://"):
+        source = repository_path(root, "repo://" + reference.removeprefix("build://"))
+        return result(
+            "unavailable" if source.is_file() else "failed",
+            "artifact_publication_required"
+            if source.is_file()
+            else "artifact_build_source_missing",
+        )
     if reference.startswith("repo://"):
         path = repository_path(root, reference)
         if not path.exists():
             return result("failed", "artifact_catalog_missing")
+        if path.is_file() and path.suffix == ".json":
+            return explicit_catalog(path, root)
         files = (
             [path]
             if path.is_file()
@@ -134,6 +189,11 @@ def artifact(reference: str, root: Path) -> Observation:  # noqa: PLR0911,PLR091
         first if rest and ("." in first or ":" in first) else "registry-1.docker.io"
     )
     repository = rest if registry == first else image
+    # LinuxServer documents LSCR as a vanity endpoint for its GHCR images.
+    # Resolve the public catalog authority explicitly; never follow arbitrary
+    # authentication redirects or forward credentials to a challenge host.
+    if registry == "lscr.io" and repository.startswith("linuxserver/"):
+        registry = "ghcr.io"
     if registry == "registry-1.docker.io" and "/" not in repository:
         repository = "library/" + repository
     if "@" in repository:
@@ -172,7 +232,16 @@ def artifact(reference: str, root: Path) -> Observation:  # noqa: PLR0911,PLR091
                 }
             )
         )
-        response = json.loads(request(auth_url))
+        username = os.environ.get("RECOVERY_GHCR_USERNAME", "")
+        credential = os.environ.get("RECOVERY_GHCR_TOKEN", "")
+        try:
+            response = json.loads(
+                request(auth_url, basic=(username, credential))
+                if registry == "ghcr.io" and username and credential
+                else request(auth_url)
+            )
+        except HTTPError:
+            return result("unavailable", "registry_auth_unavailable")
         token = response.get("token", response.get("access_token"))
         if not isinstance(token, str):
             return result("unavailable", "registry_auth_unavailable")
@@ -348,6 +417,8 @@ class BoundedProbe:
                 "RECOVERY_INFISICAL_TOKEN",
                 "RECOVERY_INFISICAL_PROJECTS",
                 "RECOVERY_LOCAL_STORAGE",
+                "RECOVERY_GHCR_USERNAME",
+                "RECOVERY_GHCR_TOKEN",
             }
         }
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
