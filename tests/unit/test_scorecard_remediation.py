@@ -189,7 +189,7 @@ def test_broker_retry_and_receipt(
 
     monkeypatch.setattr(notifications, "build_opener", lambda *_: Opener())
     monkeypatch.setattr(notifications, "sleep", delays.append)
-    assert notifications.send_event(event) is (outcome == "transient")
+    assert bool(notifications.send_event(event)) is (outcome == "transient")
     assert len(attempts) == (
         2 if outcome == "transient" else 3 if outcome == "disconnect" else 1
     )
