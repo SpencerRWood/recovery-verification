@@ -5,6 +5,8 @@ import json
 import sys
 from uuid import uuid4
 
+from dagster import DagsterInstance
+
 from recovery_verification.dagster.definitions import defs
 from recovery_verification.orchestration import (
     JOBS,
@@ -30,9 +32,13 @@ def main(argv: list[str] | None = None) -> int:
             args.execution_key or str(uuid4()),
             tuple(args.target),
         )
-        run = defs.resolve_job_def(JOBS[args.tier]).execute_in_process(
-            run_config=request.run_config, tags=request.tags, raise_on_error=False
-        )
+        with DagsterInstance.get() as instance:
+            run = defs.resolve_job_def(JOBS[args.tier]).execute_in_process(
+                instance=instance,
+                run_config=request.run_config,
+                tags=request.tags,
+                raise_on_error=False,
+            )
     except OSError, ValueError:
         sys.stdout.write(
             '{"state":"unavailable","reason":"operational_configuration_unavailable"}\n'

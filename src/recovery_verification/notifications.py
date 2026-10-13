@@ -205,14 +205,15 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def send_event(event: dict[str, object]) -> bool:  # noqa: PLR0911, PLR0912 -- Explicit destination, receipt and retry failure boundaries.
+def send_event(event: dict[str, object]) -> EventReceipt | None:  # noqa: PLR0911, PLR0912 -- Explicit destination, receipt and retry failure boundaries.
     """Runtime-injected source-bound token, bounded HTTPS, no proxies/redirects."""
     url = os.environ.get("RECOVERY_EVENTS_URL", "")
     token = os.environ.get("RECOVERY_EVENTS_TOKEN", "")
     try:
         parsed = urlsplit(url)
+        port = parsed.port
     except ValueError:
-        return False
+        return None
     if (
         not token
         or not parsed.hostname
@@ -224,18 +225,21 @@ def send_event(event: dict[str, object]) -> bool:  # noqa: PLR0911, PLR0912 -- E
             parsed.scheme != "https"
             and not (
                 parsed.scheme == "http"
-                and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+                and (
+                    parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+                    or (parsed.hostname == "wood-broker" and port == 8000)
+                )
             )
         )
     ):
-        return False
+        return None
     payload = json.dumps(event, sort_keys=True).encode()
     try:
         ensure_no_runtime_secrets(payload.decode())
     except ValueError:
-        return False
+        return None
     if token in payload.decode():
-        return False
+        return None
     request = Request(  # noqa: S310 -- Validated HTTPS or loopback HTTP URL.
         url.rstrip("/") + "/v1/events",
         data=payload,
@@ -253,28 +257,30 @@ def send_event(event: dict[str, object]) -> bool:  # noqa: PLR0911, PLR0912 -- E
                 raw = response.read(65537)
                 if response.status == 201:
                     if len(raw) > 65536:
-                        return False
+                        return None
                     receipt = EventReceipt.model_validate_json(raw)
-                    return str(receipt.record_id) == event.get("event_id") and str(
+                    if str(receipt.record_id) == event.get("event_id") and str(
                         receipt.correlation_id
-                    ) == event.get("correlation_id")
+                    ) == event.get("correlation_id"):
+                        return receipt
+                    return None
                 if response.status not in {429, 500, 502, 503, 504}:
-                    return False
+                    return None
         except HTTPError as error:
             if error.code not in {429, 500, 502, 503, 504}:
-                return False
+                return None
         except ValueError:
-            return False
+            return None
         except OSError, URLError, HTTPException:
             pass
         if attempt < 2:
             sleep(0.1 * (attempt + 1))
-    return False
+    return None
 
 
 def publish_events(
     events: tuple[dict[str, object], ...],
-    sender: Callable[[dict[str, object]], bool] = send_event,
+    sender: Callable[[dict[str, object]], EventReceipt | bool | None] = send_event,
 ) -> bool:
     results = [sender(event) for event in events]
     return all(results)

@@ -438,7 +438,7 @@ def test_restart_replay_exclusion_and_interruption(
 
 
 @pytest.mark.usefixtures("local")
-def test_outbox_ack_replay_and_unchanged_conditions(
+def test_execution_teardown_does_not_emit_target_notifications(
     config: OrchestrationConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = config.model_copy(update={"notifications_enabled": True})
@@ -448,51 +448,19 @@ def test_outbox_ack_replay_and_unchanged_conditions(
     good = reports(manifest, tmp_path).entries[0].report.model_dump_json()
     session = Execution(config, "good", manifest)
     session.report("readiness", lambda: good)
-    session.finish(
-        sender=Mock(side_effect=AssertionError("initial success stays quiet"))
-    )
+    session.finish()
     monkeypatch.setattr(
         readiness, "_interfaces", lambda *_: result("failed", "entrypoint_missing")
     )
     bad = reports(manifest, tmp_path).entries[0].report.model_dump_json()
     session = Execution(config, "bad", manifest)
     session.report("readiness", lambda: bad)
-    session.finish(sender=lambda _: False)
+    session.finish()
     state = read_state(root / "execution.json")
-    assert state.notification_state == "unavailable"
-    assert len(state.pending_events) == 1
-    event = state.pending_events[0]
-    data = event["data"]
-    assert isinstance(data, dict)
-    assert data["environment"] == "test"
-    assert data["evidence_reference"]
-    sender = Mock(return_value=True)
-    session = Execution(config, "retry", manifest)
-    session.finish(sender=sender)
-    assert sender.call_args.args[0] == event
-    assert not read_state(root / "execution.json").pending_events
-    session = Execution(config, "same-condition-new-attempt", manifest)
-    session.report(
-        "readiness",
-        lambda: reports(manifest, tmp_path).entries[0].report.model_dump_json(),  # noqa: PLW0108 -- Deferred execution factory.
-    )
-    session.finish(sender=Mock(side_effect=AssertionError("unchanged condition")))
-    # A different failed check with the same overall state/reason is actionable.
-    monkeypatch.setattr(
-        readiness, "_interfaces", lambda *_: result("passed", "fixture_ok")
-    )
-    monkeypatch.setattr(
-        readiness, "_consumer", lambda *_: result("failed", "entrypoint_missing")
-    )
-    session = Execution(config, "different-failure", manifest)
-
-    def changed_report() -> str:
-        return reports(manifest, tmp_path).entries[0].report.model_dump_json()
-
-    session.report("readiness", changed_report)
-    changed_failure = Mock(return_value=True)
-    session.finish(sender=changed_failure)
-    assert changed_failure.call_count == 1
+    assert state.notification_state == "disabled"
+    assert not state.pending_events
+    assert state.previous_scorecard
+    assert len(read_history(root / "history.json").entries) == 2
 
 
 def test_journal_tampering_and_state_permissions(

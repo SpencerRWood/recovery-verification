@@ -104,6 +104,7 @@ recovery_readiness_daily = define_asset_job(
     "recovery_readiness_daily",
     selection=AssetSelection.assets(recovery_readiness),
     executor_def=in_process_executor,
+    tags={"recovery/operation": "verification", "dagster/max_runtime": "3600"},
 )
 
 
@@ -140,6 +141,7 @@ recovery_verification_weekly = define_asset_job(
     "recovery_verification_weekly",
     selection=AssetSelection.assets(recovery_readiness, recovery_verification),
     executor_def=in_process_executor,
+    tags={"recovery/operation": "verification", "dagster/max_runtime": "3600"},
 )
 
 
@@ -185,6 +187,7 @@ recovery_drill_monthly = define_asset_job(
     "recovery_drill_monthly",
     selection=AssetSelection.assets(recovery_readiness, recovery_drill),
     executor_def=in_process_executor,
+    tags={"recovery/operation": "verification", "dagster/max_runtime": "3600"},
 )
 
 

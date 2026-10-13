@@ -10,14 +10,13 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from time import sleep
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from pydantic import AwareDatetime, Field
 
 from recovery_verification.contract import ContractModel, Level, Manifest
 from recovery_verification.history import read_bounded, read_history, write_history
 from recovery_verification.monthly import MonthlyReport
-from recovery_verification.notifications import notification_events, send_event
 from recovery_verification.orchestration import OrchestrationConfig
 from recovery_verification.probes import BoundedProbe
 from recovery_verification.readiness import (
@@ -29,8 +28,6 @@ from recovery_verification.readiness import (
 )
 from recovery_verification.scorecard import (
     History,
-    Scorecard,
-    TargetScore,
     _expected_daily,
     build_scorecard,
     canonical,
@@ -58,27 +55,6 @@ class ExecutionState(ContractModel):
     previous_scorecard: str | None = None
     pending_events: tuple[dict[str, object], ...] = ()
     notification_state: Literal["disabled", "acknowledged", "unavailable"] = "disabled"
-
-
-def condition(target: TargetScore) -> tuple[object, ...]:
-    return (
-        target.readiness,
-        target.full_recovery_verified,
-        target.strongest_current_level,
-        tuple(
-            (
-                tier.status,
-                tier.reasons,
-                tuple(
-                    (d.check_id, d.state, d.reason, d.failure_category)
-                    for d in tier.latest_attempt.diagnostics
-                )
-                if tier.latest_attempt
-                else (),
-            )
-            for tier in target.tiers
-        ),
-    )
 
 
 def interrupted_evidence(
@@ -160,7 +136,7 @@ def read_state(path: Path) -> ExecutionState:
     return state
 
 
-def write_state(path: Path, state: ExecutionState) -> None:
+def write_state(path: Path, state: ContractModel) -> None:
     """Atomic/fsynced state; never expose raw exception or response text."""
     raw = json.dumps(
         {"state": state.model_dump(mode="json"), "sha256": _digest(canonical(state))},
@@ -287,7 +263,6 @@ class Execution:
         self,
         *,
         interrupted: bool = False,
-        sender: Callable[[dict[str, object]], bool] = send_event,
     ) -> None:
         self.attempt = self.attempt.model_copy(
             update={
@@ -307,51 +282,12 @@ class Execution:
                 now=datetime.now(UTC),
                 policy=self.config.policy,
             )
-            prior = (
-                Scorecard.model_validate_json(self.state.previous_scorecard)
-                if self.state.previous_scorecard
-                else None
-            )
-            pending = list(self.state.pending_events)
-            if self.config.notifications_enabled:
-                old = {t.target_id: t for t in prior.targets} if prior else {}
-                new = {t.target_id: t for t in current.targets}
-                for event in notification_events(current, prior):
-                    target_id = str(cast("dict[str, Any]", event["data"])["target"])
-                    before, after = old.get(target_id), new[target_id]
-                    # Scheduled attempts with identical conditions stay quiet;
-                    # pending events keep their original IDs across restarts.
-                    if before and condition(before) == condition(after):
-                        continue
-                    data = dict(cast("dict[str, Any]", event["data"]))
-                    data["environment"] = self.config.environment
-                    enriched = {**event, "data": data}
-                    if not any(p["event_id"] == enriched["event_id"] for p in pending):
-                        pending.append(enriched)
-            if len(pending) > 100:
-                raise ValueError("notification_outbox_limit")
             self.state = self.state.model_copy(
                 update={
                     "previous_scorecard": canonical(current),
-                    "pending_events": tuple(pending),
                 }
             )
         write_state(self.path, self.state)
-        if self.config.notifications_enabled:
-            remaining = list(self.state.pending_events)
-            for event in self.state.pending_events:
-                if sender(event):
-                    remaining.remove(event)
-                    self.state = self.state.model_copy(
-                        update={"pending_events": tuple(remaining)}
-                    )
-                    write_state(self.path, self.state)
-            self.state = self.state.model_copy(
-                update={
-                    "notification_state": "unavailable" if remaining else "acknowledged"
-                }
-            )
-            write_state(self.path, self.state)
 
 
 @contextmanager

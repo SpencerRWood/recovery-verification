@@ -44,6 +44,14 @@ def test_definitions_and_smoke() -> None:
     }
     assert defs.schedules
     assert defs.sensors
+    for name in (
+        "recovery_readiness_daily",
+        "recovery_verification_weekly",
+        "recovery_drill_monthly",
+    ):
+        job = defs.resolve_job_def(name)
+        assert job.tags["recovery/operation"] == "verification"
+        assert job.tags["dagster/max_runtime"] == "3600"
     result = defs.get_job_def("runtime_smoke_job").execute_in_process()
     assert result.success
     assert result.output_for_node("runtime_smoke") == "ok"
