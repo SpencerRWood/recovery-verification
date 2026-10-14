@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from email.message import Message
 from pathlib import Path
@@ -111,6 +112,53 @@ def test_missing_checkout_prevents_probes(manifest: Manifest) -> None:
     runner = Mock(side_effect=AssertionError("unsafe execution"))
     assert run_readiness(manifest, {}, runner).readiness == "UNKNOWN"
     runner.assert_not_called()
+
+
+def test_native_prerequisite_findings_are_retained_separately(
+    manifest: Manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(readiness, "_checkout", lambda *_: result("passed", "checkout"))
+    monkeypatch.setattr(
+        readiness, "_interfaces", lambda *_: result("passed", "interfaces")
+    )
+    native = ConsumerResult.model_validate_json(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "mode": "preflight",
+                "readiness_state": "failed",
+                "checks": [
+                    {
+                        "id": "current_backup_group",
+                        "state": "passed",
+                        "reason": "backup_group_integrity_verified",
+                    },
+                    {
+                        "id": "independent_key_custody",
+                        "state": "failed",
+                        "reason": "independent_key_custody_unverified",
+                    },
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(readiness, "invoke_readiness", lambda *_args, **_kwargs: native)
+    report = run_readiness(
+        manifest,
+        {manifest.targets[0].id: tmp_path},
+        lambda *_: result("passed", "available"),
+    )
+    details = [c for c in report.checks if c.check_id.startswith("consumer_detail_")]
+    assert len(details) == 2
+    assert any(
+        c.check_id.endswith("current_backup_group") and c.state == "passed"
+        for c in details
+    )
+    assert any(
+        c.check_id.endswith("independent_key_custody") and c.state == "failed"
+        for c in details
+    )
+    assert report.readiness == "NOT_READY"
 
 
 @pytest.mark.usefixtures("local")
@@ -354,16 +402,21 @@ def test_secret_metadata_present_missing_and_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("RECOVERY_INFISICAL_URL", "https://vault.example.test")
-    monkeypatch.setenv("RECOVERY_INFISICAL_TOKEN", "never-log-token")
+    monkeypatch.setenv("RECOVERY_INFISICAL_CLIENT_ID", "fixture-client")
+    monkeypatch.setenv("RECOVERY_INFISICAL_CLIENT_SECRET", "fixture-secret")
+    monkeypatch.setattr(probes, "metadata_token", lambda *_: "never-log-token")
     reference = "infisical://" + "1" * 8 + "-1111-1111-1111-111111111111/dev/app/KEY"
 
     def metadata(url: str, *, token: str = "", head: bool = False) -> bytes:
         query = parse_qs(urlsplit(url).query)
         assert query["viewSecretValue"] == ["false"]
         assert query["expandSecretReferences"] == ["false"]
+        assert query["includeImports"] == ["false"]
+        assert query["type"] == ["shared"]
+        assert urlsplit(url).path == "/api/v4/secrets/KEY"
         assert token == "never-log-token"  # noqa: S105 -- Synthetic credential exclusion fixture.
         assert not head
-        return b'{"secrets":[{"secretKey":"KEY","secretValue":""}]}'
+        return b'{"secret":{"secretKey":"KEY","secretValue":""}}'
 
     monkeypatch.setattr(probes, "request", metadata)
     observation = probe("secret", reference, tmp_path, None)
@@ -371,7 +424,8 @@ def test_secret_metadata_present_missing_and_unavailable(
     assert "never-log" not in observation.model_dump_json()
     monkeypatch.setattr(probes, "request", lambda *_args, **_kwargs: b'{"secrets":[]}')
     assert (
-        probe("secret", reference, tmp_path, None).reason == "secret_reference_missing"
+        probe("secret", reference, tmp_path, None).reason
+        == "secret_metadata_contract_failed"
     )
     monkeypatch.setattr(
         probes,
@@ -380,7 +434,10 @@ def test_secret_metadata_present_missing_and_unavailable(
             b'{"secrets":[],"imports":[{"secrets":[{"secretKey":"KEY"}]}]}'
         ),
     )
-    assert probe("secret", reference, tmp_path, None).state == "passed"
+    assert (
+        probe("secret", reference, tmp_path, None).reason
+        == "secret_metadata_contract_failed"
+    )
     monkeypatch.setattr(
         probes,
         "request",
@@ -395,14 +452,14 @@ def test_secret_metadata_present_missing_and_unavailable(
         probes,
         "request",
         lambda *_args, **_kwargs: (
-            b'{"secrets":[{"secretKey":"KEY","secretValue":"never-emit"}]}'
+            b'{"secret":{"secretKey":"KEY","secretValue":"never-emit"}}'
         ),
     )
     assert (
         probe("secret", reference, tmp_path, None).reason
         == "secret_metadata_contract_failed"
     )
-    monkeypatch.delenv("RECOVERY_INFISICAL_TOKEN")
+    monkeypatch.delenv("RECOVERY_INFISICAL_CLIENT_SECRET")
     assert (
         probe("secret", reference, tmp_path, None).reason == "secret_probe_unconfigured"
     )
@@ -435,12 +492,14 @@ def test_secret_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
         "RECOVERY_INFISICAL_PROJECTS",
         json.dumps({"Named": "11111111-1111-1111-1111-111111111111"}),
     )
-    monkeypatch.setenv("RECOVERY_INFISICAL_TOKEN", "never-log")
+    monkeypatch.setenv("RECOVERY_INFISICAL_CLIENT_ID", "fixture-client")
+    monkeypatch.setenv("RECOVERY_INFISICAL_CLIENT_SECRET", "fixture-secret")
+    monkeypatch.setattr(probes, "metadata_token", lambda *_: "never-log")
     monkeypatch.setenv("RECOVERY_INFISICAL_URL", "https://vault.example.test")
     monkeypatch.setattr(
         probes,
         "request",
-        lambda *_args, **_kwargs: b'{"secrets":[{"secretKey":"KEY"}]}',
+        lambda *_args, **_kwargs: b'{"secret":{"secretKey":"KEY"}}',
     )
     assert (
         probe(
@@ -479,6 +538,141 @@ def test_artifact_catalog_and_templates(
     (tmp_path / "empty.yml").write_text("services: {}\n")
     assert probe("artifact", "repo://empty.yml", tmp_path, None).state == "unavailable"
     assert probes.images([{"image": "ubuntu"}]) == ["ubuntu"]
+
+
+def test_explicit_catalog_requires_immutable_registry_references(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = tmp_path / "artifacts.json"
+    lookup = Mock(return_value=b"")
+    monkeypatch.setattr(probes, "request", lookup)
+    catalog.write_text(
+        json.dumps({"schema_version": "1", "references": ["oci://ubuntu:latest"]})
+    )
+    assert artifact_observation(tmp_path).reason == "artifact_catalog_invalid"
+    lookup.assert_not_called()
+    catalog.write_text(
+        json.dumps(
+            {"schema_version": "1", "references": ["oci://ubuntu@sha256:" + "a" * 64]}
+        )
+    )
+    assert artifact_observation(tmp_path).state == "passed"
+    catalog.write_text(
+        json.dumps({"schema_version": "1", "references": ["build://Dockerfile"]})
+    )
+    assert artifact_observation(tmp_path).reason == "artifact_catalog_checked"
+    assert artifact_observation(tmp_path).state == "failed"
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+    assert artifact_observation(tmp_path).state == "unavailable"
+
+
+def artifact_observation(root: Path) -> readiness.Observation:
+    return probe("artifact", "repo://artifacts.json", root, None)
+
+
+def test_lscr_catalog_uses_documented_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup = Mock(return_value=b"")
+    monkeypatch.setattr(probes, "request", lookup)
+    image = "lscr.io/linuxserver/calibre:latest@sha256:" + "a" * 64
+    assert probe("artifact", "oci://" + image, tmp_path, None).state == "passed"
+    lookup.assert_called_once_with(
+        "https://ghcr.io/v2/linuxserver/calibre/manifests/sha256:" + "a" * 64, head=True
+    )
+
+
+def test_private_ghcr_auth_is_scoped_and_failure_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    headers = Message()
+    headers["WWW-Authenticate"] = (
+        'Bearer realm="https://ghcr.io/token",service="ghcr.io"'
+    )
+    challenge = HTTPError("https://ghcr.io", 401, "auth", headers, None)
+    lookup = Mock(side_effect=[challenge, b'{"token":"anonymous"}', b""])
+    monkeypatch.setattr(probes, "request", lookup)
+    monkeypatch.setenv("RECOVERY_GHCR_USERNAME", "scoped-reader")
+    monkeypatch.setenv("RECOVERY_GHCR_TOKEN", "test-only-credential")
+    image = "oci://ghcr.io/owner/app@sha256:" + "a" * 64
+    assert probe("artifact", image, tmp_path, None).state == "passed"
+    assert lookup.call_args_list[1].kwargs["basic"] == (
+        "scoped-reader",
+        "test-only-credential",
+    )
+    lookup.side_effect = [
+        challenge,
+        HTTPError("https://ghcr.io/token", 403, "denied", Message(), None),
+    ]
+    assert (
+        probe("artifact", image, tmp_path, None).reason == "registry_auth_unavailable"
+    )
+
+
+def test_credentials_never_go_to_unapproved_authority() -> None:
+    with pytest.raises(ValueError, match="credential_authority"):
+        probes.request("https://example.test/token", basic=("reader", "test-only"))
+
+
+def test_registry_accepts_oci_and_docker_multiarch_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opener = Mock()
+    opener.open.return_value = nullcontext(Mock(read=Mock(return_value=b"")))
+    monkeypatch.setattr(probes, "build_opener", Mock(return_value=opener))
+    probes.request(
+        "https://registry.example/v2/owner/image/manifests/sha256:abc", head=True
+    )
+    header = opener.open.call_args.args[0].get_header("Accept")
+    assert "application/vnd.oci.image.index.v1+json" in header
+    assert "application/vnd.docker.distribution.manifest.list.v2+json" in header
+
+
+@pytest.mark.parametrize(
+    ("image", "repository", "registry"),
+    [
+        ("ghcr.io/example/app:v0.7.0", "example/app", "ghcr.io"),
+        ("ghcr.io/example/app", "example/app", "ghcr.io"),
+        ("ubuntu:24.04", "library/ubuntu", "registry-1.docker.io"),
+        ("registry.example:5000/team/app:stable", "team/app", "registry.example:5000"),
+    ],
+)
+def test_digest_pins_use_repository_name_and_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    image: str,
+    repository: str,
+    registry: str,
+) -> None:
+    digest = "sha256:" + "a" * 64
+    headers = Message()
+    headers["WWW-Authenticate"] = f'Bearer realm="https://{registry}/token"'
+    challenge = HTTPError("https://" + registry, 401, "auth", headers, None)
+    calls = Mock(side_effect=[challenge, b'{"token":"anonymous"}', b""])
+    monkeypatch.setattr(probes, "request", calls)
+    assert (
+        probe("artifact", f"oci://{image}@{digest}", tmp_path, None).state == "passed"
+    )
+    url = f"https://{registry}/v2/{repository}/manifests/{digest}"
+    assert calls.call_args_list[0].args == (url,)
+    assert calls.call_args_list[2].args == (url,)
+    assert parse_qs(urlsplit(calls.call_args_list[1].args[0]).query)["scope"] == [
+        f"repository:{repository}:pull"
+    ]
+
+
+def test_missing_digest_does_not_fall_back_to_available_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = Mock(
+        side_effect=HTTPError("https://ghcr.io", 404, "missing", Message(), None)
+    )
+    monkeypatch.setattr(probes, "request", missing)
+    image = "oci://ghcr.io/example/app:stable@sha256:" + "b" * 64
+    assert probe("artifact", image, tmp_path, None).reason == "artifact_missing"
+    missing.assert_called_once_with(
+        "https://ghcr.io/v2/example/app/manifests/sha256:" + "b" * 64, head=True
+    )
 
 
 @pytest.mark.parametrize(
