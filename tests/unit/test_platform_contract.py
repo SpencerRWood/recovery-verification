@@ -48,7 +48,11 @@ def test_runtime_release_contract() -> None:
     assert inputs["recovery_approved"]["required"] is True
     assert inputs["recovery_approved"]["default"] is False
     assert release["with"]["approved_revision"] == "${{ inputs.approved_revision }}"
-    assert release["with"]["recovery_approved"] == "${{ inputs.recovery_approved }}"
+    assert (
+        release["with"]["recovery_approved"]
+        == "${{ inputs.recovery_approved == true }}"
+    )
+    assert release["with"]["approved"] == "${{ inputs.release_approved == true }}"
     assert release["permissions"] == {
         "contents": "write",
         "packages": "write",
