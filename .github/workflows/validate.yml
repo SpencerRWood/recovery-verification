@@ -18,9 +18,9 @@
   },
   "jobs": {
     "validation": {
-      "uses": "SpencerRWood/workflows/.github/workflows/validate.yml@9748b1cd6287d84d55c4277c93ca5dae01fb1787",
+      "uses": "SpencerRWood/workflows/.github/workflows/validate.yml@613bb7d915cec854b5f7f2b5d26e963c8a4ada3f",
       "with": {
-        "workflow_revision": "9748b1cd6287d84d55c4277c93ca5dae01fb1787"
+        "workflow_revision": "613bb7d915cec854b5f7f2b5d26e963c8a4ada3f"
       },
       "secrets": {
         "dbt_host": "${{ secrets.DBT_HOST }}",
