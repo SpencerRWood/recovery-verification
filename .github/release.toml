@@ -1,21 +1,22 @@
-version = 1
+"version" = 1
 
-[python]
-version = "3.14"
+["python"]
+"version" = "3.14"
 
-[validation]
-checks = ["ruff", "ruff-format", "mypy", "pytest", "pre-commit"]
+["validation"]
+"checks" = ["ruff", "ruff-format", "mypy", "pytest", "pre-commit"]
 
-[build]
-python_package = true
+["build"]
+"python_package" = true
 
-[dagster]
-runtime_validation = true
-smoke_job = "runtime_smoke_job"
+["dagster"]
+"runtime_validation" = true
+"smoke_job" = "runtime_smoke_job"
 
-[container]
-publish = true
-image_name = "recovery-verification"
+["container"]
+"publish" = true
+"image_name" = "recovery-verification"
 
-[release]
-semantic_release = true
+["release"]
+"semantic_release" = true
+"tag_merged_commit" = true

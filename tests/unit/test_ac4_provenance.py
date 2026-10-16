@@ -137,11 +137,12 @@ def test_future_check_metadata_rejected(
         )
 
 
-def test_publication_requires_explicit_main_dispatch() -> None:
+def test_publication_requires_main_integration_or_approved_main_dispatch() -> None:
     root = Path(__file__).parents[2]
     workflow = yaml.safe_load((root / ".github/workflows/release.yml").read_text())
     triggers = workflow.get("on", workflow.get(True))
-    assert set(triggers) == {"workflow_dispatch"}
+    assert set(triggers) == {"workflow_dispatch", "push"}
+    assert triggers["push"]["branches"] == ["main"]
     assert (
         triggers["workflow_dispatch"]["inputs"]["release_approved"]["default"] is False
     )
@@ -149,3 +150,4 @@ def test_publication_requires_explicit_main_dispatch() -> None:
     assert "github.ref == 'refs/heads/main'" in guard
     assert "github.event_name == 'workflow_dispatch'" in guard
     assert "inputs.release_approved == true" in guard
+    assert "github.event_name == 'push'" in guard

@@ -35,8 +35,11 @@ def test_runtime_release_contract() -> None:
     assert "release-container.yml@" in release["uses"]
     assert release["with"]["workflow_revision"] == release["uses"].split("@")[-1]
     assert re.fullmatch(r"[0-9a-f]{40}", release["with"]["workflow_revision"])
-    assert release["with"]["require_approval"] is True
-    assert "packages: write" in caller
+    assert (
+        release["with"]["require_approval"]
+        == "${{ github.event_name == 'workflow_dispatch' }}"
+    )
+    assert release["permissions"]["packages"] == "write"
     inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
     assert inputs["approved_revision"]["type"] == "string"
     assert inputs["approved_revision"]["required"] is True
