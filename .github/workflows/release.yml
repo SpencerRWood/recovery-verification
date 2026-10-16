@@ -31,13 +31,13 @@
   "jobs": {
     "release": {
       "if": "github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_approved == true))",
-      "uses": "SpencerRWood/workflows/.github/workflows/release-container.yml@9748b1cd6287d84d55c4277c93ca5dae01fb1787",
+      "uses": "SpencerRWood/workflows/.github/workflows/release-container.yml@613bb7d915cec854b5f7f2b5d26e963c8a4ada3f",
       "with": {
         "require_approval": "${{ github.event_name == 'workflow_dispatch' }}",
-        "workflow_revision": "9748b1cd6287d84d55c4277c93ca5dae01fb1787",
-        "approved": "${{ inputs.release_approved }}",
+        "workflow_revision": "613bb7d915cec854b5f7f2b5d26e963c8a4ada3f",
+        "approved": "${{ inputs.release_approved == true }}",
         "approved_revision": "${{ inputs.approved_revision }}",
-        "recovery_approved": "${{ inputs.recovery_approved }}"
+        "recovery_approved": "${{ inputs.recovery_approved == true }}"
       },
       "permissions": {
         "contents": "write",
