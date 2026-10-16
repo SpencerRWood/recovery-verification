@@ -1,35 +1,50 @@
-name: Release
-
-on:
-  workflow_dispatch:
-    inputs:
-      release_approved:
-        description: 'Confirm the reviewed release scope and main revision are approved for publication'
-        type: boolean
-        required: true
-        default: false
-      approved_revision:
-        description: 'Exact reviewed current main SHA authorized for this publication'
-        type: string
-        required: true
-      recovery_approved:
-        description: 'Separate authorization to reuse a candidate or resume partial publication'
-        type: boolean
-        required: true
-        default: false
-
-jobs:
-  release:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.release_approved == true
-    uses: SpencerRWood/workflows/.github/workflows/release-container.yml@74b31b0d4f9f39dfe6a3a0f3c1bbeffca8bfaee4
-    with:
-      require_approval: true
-      workflow_revision: 74b31b0d4f9f39dfe6a3a0f3c1bbeffca8bfaee4
-      approved: ${{ inputs.release_approved }}
-      approved_revision: ${{ inputs.approved_revision }}
-      recovery_approved: ${{ inputs.recovery_approved }}
-    permissions:
-      contents: write
-      packages: write
-      id-token: write
-      attestations: write
+{
+  "name": "Release",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "release_approved": {
+          "description": "Confirm the reviewed release scope and main revision are approved for publication",
+          "type": "boolean",
+          "required": true,
+          "default": false
+        },
+        "approved_revision": {
+          "description": "Exact reviewed current main SHA authorized for this publication",
+          "type": "string",
+          "required": true
+        },
+        "recovery_approved": {
+          "description": "Separate authorization to reuse a candidate or resume partial publication",
+          "type": "boolean",
+          "required": true,
+          "default": false
+        }
+      }
+    },
+    "push": {
+      "branches": [
+        "main"
+      ]
+    }
+  },
+  "jobs": {
+    "release": {
+      "if": "github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_approved == true))",
+      "uses": "SpencerRWood/workflows/.github/workflows/release-container.yml@9748b1cd6287d84d55c4277c93ca5dae01fb1787",
+      "with": {
+        "require_approval": "${{ github.event_name == 'workflow_dispatch' }}",
+        "workflow_revision": "9748b1cd6287d84d55c4277c93ca5dae01fb1787",
+        "approved": "${{ inputs.release_approved }}",
+        "approved_revision": "${{ inputs.approved_revision }}",
+        "recovery_approved": "${{ inputs.recovery_approved }}"
+      },
+      "permissions": {
+        "contents": "write",
+        "packages": "write",
+        "id-token": "write",
+        "attestations": "write"
+      }
+    }
+  }
+}
